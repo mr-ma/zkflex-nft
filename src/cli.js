@@ -4,7 +4,7 @@
 
 require('dotenv').config()
 const fs = require('fs')
-const axios = require('axios')
+// const axios = require('axios')
 const assert = require('assert')
 const snarkjs = require('snarkjs')
 const crypto = require('crypto')
@@ -18,7 +18,7 @@ const { toWei, fromWei, toBN, BN } = require('web3-utils')
 const config = require('./config')
 const program = require('commander')
 
-let web3, tornado, circuit, proving_key, groth16, erc20, senderAccount, netId
+let web3, flexclub, flexnft, nftAddress, circuit, proving_key, groth16, erc20, erc721, senderAccount, netId
 let MERKLE_TREE_HEIGHT, ETH_AMOUNT, TOKEN_AMOUNT, PRIVATE_KEY
 
 /** Whether we are in a browser or node.js */
@@ -49,6 +49,12 @@ async function printERC20Balance({ address, name, tokenAddress }) {
   console.log(`${name} Token Balance is`, web3.utils.fromWei(await erc20.methods.balanceOf(address).call()))
 }
 
+/** Display ERC20 account balance */
+async function printNFTBalance({ address, name }) {
+  erc721 = flexnft
+  console.log(`${name} NFT Balance is`, await erc721.methods.balanceOf(address).call())
+}
+
 /**
  * Create deposit object from secret and nullifier
  */
@@ -70,18 +76,18 @@ function createDeposit({ nullifier, secret }) {
 async function deposit({ currency, amount }) {
   const deposit = createDeposit({ nullifier: rbigint(31), secret: rbigint(31) })
   const note = toHex(deposit.preimage, 62)
-  const noteString = `tornado-${currency}-${amount}-${netId}-${note}`
+  const noteString = `flexclub-${currency}-${amount}-${netId}-${note}`
   console.log(`Your note: ${noteString}`)
   if (currency === 'eth') {
-    await printETHBalance({ address: tornado._address, name: 'Tornado' })
+    await printETHBalance({ address: flexclub._address, name: 'Tornado' })
     await printETHBalance({ address: senderAccount, name: 'Sender account' })
     const value = isLocalRPC ? ETH_AMOUNT : fromDecimals({ amount, decimals: 18 })
     console.log('Submitting deposit transaction')
-    await tornado.methods.deposit(toHex(deposit.commitment)).send({ value, from: senderAccount, gas: 2e6 })
-    await printETHBalance({ address: tornado._address, name: 'Tornado' })
+    await flexclub.methods.deposit(toHex(deposit.commitment)).send({ value, from: senderAccount, gas: 2e6 })
+    await printETHBalance({ address: flexclub._address, name: 'Tornado' })
     await printETHBalance({ address: senderAccount, name: 'Sender account' })
   } else { // a token
-    await printERC20Balance({ address: tornado._address, name: 'Tornado' })
+    await printERC20Balance({ address: flexclub._address, name: 'Tornado' })
     await printERC20Balance({ address: senderAccount, name: 'Sender account' })
     const decimals = isLocalRPC ? 18 : config.deployments[`netId${netId}`][currency].decimals
     const tokenAmount = isLocalRPC ? TOKEN_AMOUNT : fromDecimals({ amount, decimals })
@@ -90,16 +96,16 @@ async function deposit({ currency, amount }) {
       await erc20.methods.mint(senderAccount, tokenAmount).send({ from: senderAccount, gas: 2e6 })
     }
 
-    const allowance = await erc20.methods.allowance(senderAccount, tornado._address).call({ from: senderAccount })
+    const allowance = await erc20.methods.allowance(senderAccount, flexclub._address).call({ from: senderAccount })
     console.log('Current allowance is', fromWei(allowance))
     if (toBN(allowance).lt(toBN(tokenAmount))) {
       console.log('Approving tokens for deposit')
-      await erc20.methods.approve(tornado._address, tokenAmount).send({ from: senderAccount, gas: 1e6 })
+      await erc20.methods.approve(flexclub._address, tokenAmount).send({ from: senderAccount, gas: 1e6 })
     }
 
     console.log('Submitting deposit transaction')
-    await tornado.methods.deposit(toHex(deposit.commitment)).send({ from: senderAccount, gas: 2e6 })
-    await printERC20Balance({ address: tornado._address, name: 'Tornado' })
+    await flexclub.methods.deposit(toHex(deposit.commitment)).send({ from: senderAccount, gas: 2e6 })
+    await printERC20Balance({ address: flexclub._address, name: 'Tornado' })
     await printERC20Balance({ address: senderAccount, name: 'Sender account' })
   }
 
@@ -108,14 +114,14 @@ async function deposit({ currency, amount }) {
 
 /**
  * Generate merkle tree for a deposit.
- * Download deposit events from the tornado, reconstructs merkle tree, finds our deposit leaf
+ * Download deposit events from the flexclub, reconstructs merkle tree, finds our deposit leaf
  * in it and generates merkle proof
  * @param deposit Deposit object
  */
 async function generateMerkleProof(deposit) {
   // Get all deposit events from smart contract and assemble merkle tree from them
-  console.log('Getting current state from tornado contract')
-  const events = await tornado.getPastEvents('Deposit', { fromBlock: 0, toBlock: 'latest' })
+  console.log('Getting current state from flexclub contract')
+  const events = await flexclub.getPastEvents('Deposit', { fromBlock: 0, toBlock: 'latest' })
   const leaves = events
     .sort((a, b) => a.returnValues.leafIndex - b.returnValues.leafIndex) // Sort events in chronological order
     .map(e => e.returnValues.commitment)
@@ -127,8 +133,8 @@ async function generateMerkleProof(deposit) {
 
   // Validate that our data is correct
   const root = tree.root()
-  const isValidRoot = await tornado.methods.isKnownRoot(toHex(root)).call()
-  const isSpent = await tornado.methods.isSpent(toHex(deposit.nullifierHash)).call()
+  const isValidRoot = await flexclub.methods.isKnownRoot(toHex(root)).call()
+  const isSpent = await flexclub.methods.isSpent(toHex(deposit.nullifierHash)).call()
   assert(isValidRoot === true, 'Merkle tree is corrupted')
   assert(isSpent === false, 'The note is already spent')
   assert(leafIndex >= 0, 'The deposit is not found in the tree')
@@ -186,54 +192,20 @@ async function generateProof({ deposit, recipient, relayerAddress = 0, fee = 0, 
 }
 
 /**
- * Do an ETH withdrawal
- * @param noteString Note to withdraw
- * @param recipient Recipient address
+ * Do a mint NFT
  */
-async function withdraw({ deposit, currency, amount, recipient, relayerURL, refund = '0' }) {
+async function mintNFT({ deposit, currency, recipient, relayerURL='', refund = '0' }) {
   if (currency === 'eth' && refund !== '0') {
-    throw new Error('The ETH purchase is supposted to be 0 for ETH withdrawals')
+    throw new Error('The ETH purchase is supposed to be 0 for ETH withdrawals')
   }
   refund = toWei(refund)
   if (relayerURL) {
-    if (relayerURL.endsWith('.eth')) {
-      throw new Error('ENS name resolving is not supported. Please provide DNS name of the relayer. See instuctions in README.md')
-    }
-    const relayerStatus = await axios.get(relayerURL + '/status')
-    const { relayerAddress, netId, gasPrices, ethPrices, relayerServiceFee } = relayerStatus.data
-    assert(netId === await web3.eth.net.getId() || netId === '*', 'This relay is for different network')
-    console.log('Relay address: ', relayerAddress)
-
-    const decimals = isLocalRPC ? 18 : config.deployments[`netId${netId}`][currency].decimals
-    const fee = calculateFee({ gasPrices, currency, amount, refund, ethPrices, relayerServiceFee, decimals })
-    if (fee.gt(fromDecimals({ amount, decimals }))) {
-      throw new Error('Too high refund')
-    }
-    const { proof, args } = await generateProof({ deposit, recipient, relayerAddress, fee, refund })
-
-    console.log('Sending withdraw transaction through relay')
-    try {
-      const relay = await axios.post(relayerURL + '/relay', { contract: tornado._address, proof, args })
-      if (netId === 1 || netId === 42) {
-        console.log(`Transaction submitted through the relay. View transaction on etherscan https://${getCurrentNetworkName()}etherscan.io/tx/${relay.data.txHash}`)
-      } else {
-        console.log(`Transaction submitted through the relay. The transaction hash is ${relay.data.txHash}`)
-      }
-
-      const receipt = await waitForTxReceipt({ txHash: relay.data.txHash })
-      console.log('Transaction mined in block', receipt.blockNumber)
-    } catch (e) {
-      if (e.response) {
-        console.error(e.response.data.error)
-      } else {
-        console.error(e.message)
-      }
-    }
+    throw new Error('Relayers are coming soon!')
   } else { // using private key
     const { proof, args } = await generateProof({ deposit, recipient, refund })
 
-    console.log('Submitting withdraw transaction')
-    await tornado.methods.withdraw(proof, ...args).send({ from: senderAccount, value: refund.toString(), gas: 1e6 })
+    console.log('Submitting mintNFT transaction')
+    await flexclub.methods.mintNFT(proof, ...args).send({ from: senderAccount, value: refund.toString(), gas: 1e6 })
       .on('transactionHash', function (txHash) {
         if (netId === 1 || netId === 42) {
           console.log(`View transaction on etherscan https://${getCurrentNetworkName()}etherscan.io/tx/${txHash}`)
@@ -246,6 +218,34 @@ async function withdraw({ deposit, currency, amount, recipient, relayerURL, refu
   }
   console.log('Done')
 }
+
+
+/**
+ * Do ETH withdrawal
+ */
+async function withdraw({ currency = 'eth', relayerURL = '', refund = '0' }) {
+  if (currency === 'eth' && refund !== '0') {
+    throw new Error('The ETH purchase is supposed to be 0 for ETH withdrawals')
+  }
+  refund = toWei(refund)
+  if (relayerURL) {
+    throw new Error('Relayers are coming soon!')
+  } else { // using private key
+    console.log('Submitting withdraw transaction')
+    await flexclub.methods.withdraw().send({ from: senderAccount, value: refund.toString(), gas: 1e6 })
+      .on('transactionHash', function (txHash) {
+        if (netId === 1 || netId === 42) {
+          console.log(`View transaction on etherscan https://${getCurrentNetworkName()}etherscan.io/tx/${txHash}`)
+        } else {
+          console.log(`The transaction hash is ${txHash}`)
+        }
+      }).on('error', function (e) {
+        console.error('on transactionHash error', e.message)
+      })
+  }
+  console.log('Done')
+}
+
 
 function fromDecimals({ amount, decimals }) {
   amount = amount.toString()
@@ -345,61 +345,13 @@ function getCurrentNetworkName() {
 
 }
 
-function calculateFee({ gasPrices, currency, amount, refund, ethPrices, relayerServiceFee, decimals }) {
-  const decimalsPoint = Math.floor(relayerServiceFee) === Number(relayerServiceFee) ?
-    0 :
-    relayerServiceFee.toString().split('.')[1].length
-  const roundDecimal = 10 ** decimalsPoint
-  const total = toBN(fromDecimals({ amount, decimals }))
-  const feePercent = total.mul(toBN(relayerServiceFee * roundDecimal)).div(toBN(roundDecimal * 100))
-  const expense = toBN(toWei(gasPrices.fast.toString(), 'gwei')).mul(toBN(5e5))
-  let desiredFee
-  switch (currency) {
-  case 'eth': {
-    desiredFee = expense.add(feePercent)
-    break
-  }
-  default: {
-    desiredFee = expense.add(toBN(refund))
-      .mul(toBN(10 ** decimals))
-      .div(toBN(ethPrices[currency]))
-    desiredFee = desiredFee.add(feePercent)
-    break
-  }
-  }
-  return desiredFee
-}
-
-/**
- * Waits for transaction to be mined
- * @param txHash Hash of transaction
- * @param attempts
- * @param delay
- */
-function waitForTxReceipt({ txHash, attempts = 60, delay = 1000 }) {
-  return new Promise((resolve, reject) => {
-    const checkForTx = async (txHash, retryAttempt = 0) => {
-      const result = await web3.eth.getTransactionReceipt(txHash)
-      if (!result || !result.blockNumber) {
-        if (retryAttempt <= attempts) {
-          setTimeout(() => checkForTx(txHash, retryAttempt + 1), delay)
-        } else {
-          reject(new Error('tx was not mined'))
-        }
-      } else {
-        resolve(result)
-      }
-    }
-    checkForTx(txHash)
-  })
-}
 
 /**
  * Parses Tornado.cash note
  * @param noteString the note
  */
 function parseNote(noteString) {
-  const noteRegex = /tornado-(?<currency>\w+)-(?<amount>[\d.]+)-(?<netId>\d+)-0x(?<note>[0-9a-fA-F]{124})/g
+  const noteRegex = /flexclub-(?<currency>\w+)-(?<amount>[\d.]+)-(?<netId>\d+)-0x(?<note>[0-9a-fA-F]{124})/g
   const match = noteRegex.exec(noteString)
   if (!match) {
     throw new Error('The note has invalid format')
@@ -416,7 +368,7 @@ function parseNote(noteString) {
 
 async function loadDepositData({ deposit }) {
   try {
-    const eventWhenHappened = await tornado.getPastEvents('Deposit', {
+    const eventWhenHappened = await flexclub.getPastEvents('Deposit', {
       filter: {
         commitment: deposit.commitmentHex,
       },
@@ -429,7 +381,7 @@ async function loadDepositData({ deposit }) {
 
     const { timestamp } = eventWhenHappened[0].returnValues
     const txHash = eventWhenHappened[0].transactionHash
-    const isSpent = await tornado.methods.isSpent(deposit.nullifierHex).call()
+    const isSpent = await flexclub.methods.isSpent(deposit.nullifierHex).call()
     const receipt = await web3.eth.getTransactionReceipt(txHash)
 
     return { timestamp, txHash, isSpent, from: receipt.from, commitment: deposit.commitmentHex }
@@ -440,7 +392,7 @@ async function loadDepositData({ deposit }) {
 }
 async function loadWithdrawalData({ amount, currency, deposit }) {
   try {
-    const events = await tornado.getPastEvents('Withdrawal', {
+    const events = await flexclub.getPastEvents('Withdrawal', {
       fromBlock: 0,
       toBlock: 'latest',
     })
@@ -472,13 +424,14 @@ async function loadWithdrawalData({ amount, currency, deposit }) {
  * Init web3, contracts, and snark
  */
 async function init({ rpc, noteNetId, currency = 'dai', amount = '100' }) {
-  let contractJson, erc20ContractJson, erc20tornadoJson, tornadoAddress, tokenAddress
+  let contractJson, contractNFTJson, erc20ContractJson, /*erc20flexclubJson,*/ flexclubAddress, tokenAddress
   // TODO do we need this? should it work in browser really?
   if (inBrowser) {
     // Initialize using injected web3 (Metamask)
     // To assemble web version run `npm run browserify`
     web3 = new Web3(window.web3.currentProvider, null, { transactionConfirmationBlocks: 1 })
-    contractJson = await (await fetch('build/contracts/ETHTornado.json')).json()
+    contractJson = await (await fetch('build/contracts/ETHFlexClub.json')).json()
+    contractNFTJson = await (await fetch('build/contracts/FlexNFT.json')).json()
     circuit = await (await fetch('build/circuits/withdraw.json')).json()
     proving_key = await (await fetch('build/circuits/withdraw_proving_key.bin')).arrayBuffer()
     MERKLE_TREE_HEIGHT = 20
@@ -488,7 +441,8 @@ async function init({ rpc, noteNetId, currency = 'dai', amount = '100' }) {
   } else {
     // Initialize from local node
     web3 = new Web3(rpc, null, { transactionConfirmationBlocks: 1 })
-    contractJson = require(__dirname + '/../build/contracts/ETHTornado.json')
+    contractJson = require(__dirname + '/../build/contracts/ETHFlexClub.json')
+    contractNFTJson = require(__dirname + '/../build/contracts/FlexNFT.json')
     circuit = require(__dirname + '/../build/circuits/withdraw.json')
     proving_key = fs.readFileSync(__dirname + '/../build/circuits/withdraw_proving_key.bin').buffer
     MERKLE_TREE_HEIGHT = process.env.MERKLE_TREE_HEIGHT || 20
@@ -504,7 +458,7 @@ async function init({ rpc, noteNetId, currency = 'dai', amount = '100' }) {
       console.log('Warning! PRIVATE_KEY not found. Please provide PRIVATE_KEY in .env file if you deposit')
     }
     erc20ContractJson = require(__dirname + '/../build/contracts/ERC20Mock.json')
-    erc20tornadoJson = require(__dirname + '/../build/contracts/ERC20Tornado.json')
+    // erc20flexclubJson = require(__dirname + '/../build/contracts/ERC20Tornado.json')
   }
   // groth16 initialises a lot of Promises that will never be resolved, that's why we need to use process.exit to terminate the CLI
   groth16 = await buildGroth16()
@@ -512,26 +466,32 @@ async function init({ rpc, noteNetId, currency = 'dai', amount = '100' }) {
   if (noteNetId && Number(noteNetId) !== netId) {
     throw new Error('This note is for a different network. Specify the --rpc option explicitly')
   }
+  console.log('netId:', netId)
   isLocalRPC = netId > 42
 
   if (isLocalRPC) {
-    tornadoAddress = currency === 'eth' ? contractJson.networks[netId].address : erc20tornadoJson.networks[netId].address
-    tokenAddress = currency !== 'eth' ? erc20ContractJson.networks[netId].address : null
+    console.log('in LocalRPC')
+    flexclubAddress = /*currency === 'eth' ?*/ contractJson.networks[netId].address// : erc20flexclubJson.networks[netId].address
+    tokenAddress = /*currency !== 'eth' ? erc20ContractJson.networks[netId].address :*/ null
+    nftAddress = contractNFTJson.networks[netId].address
     senderAccount = (await web3.eth.getAccounts())[0]
   } else {
     try {
-      tornadoAddress = config.deployments[`netId${netId}`][currency].instanceAddress[amount]
-      if (!tornadoAddress) {
+      flexclubAddress = config.deployments[`netId${netId}`][currency].instanceAddress[amount]
+      if (!flexclubAddress) {
         throw new Error()
       }
       tokenAddress = config.deployments[`netId${netId}`][currency].tokenAddress
+      nftAddress = config.deployments[`netId${netId}`].nftAddress
     } catch (e) {
-      console.error('There is no such tornado instance, check the currency and amount you provide')
+      console.error('There is no such flexclub instance, check the currency and amount you provide')
       process.exit(1)
     }
   }
-  tornado = new web3.eth.Contract(contractJson.abi, tornadoAddress)
+  flexclub = new web3.eth.Contract(contractJson.abi, flexclubAddress)
   erc20 = currency !== 'eth' ? new web3.eth.Contract(erc20ContractJson.abi, tokenAddress) : {}
+  flexnft = new web3.eth.Contract(contractNFTJson.abi, nftAddress)
+  console.log('nftAddress:',nftAddress)
 }
 
 async function main() {
@@ -541,13 +501,19 @@ async function main() {
     window.deposit = async () => {
       await deposit(instance)
     }
-    window.withdraw = async () => {
-      const noteString = prompt('Enter the note to withdraw')
+    window.mintNFT = async () => {
+      const noteString = prompt('Enter the note to mintNFT')
       const recipient = (await web3.eth.getAccounts())[0]
 
       const { currency, amount, netId, deposit } = parseNote(noteString)
       await init({ noteNetId: netId, currency, amount })
-      await withdraw({ deposit, currency, amount, recipient })
+      await mintNFT({ deposit, currency, recipient })
+    }
+    window.withdraw = async () => {
+      const noteString = prompt('Wait the minimum block numbers to withdraw (type OK)')
+      if(noteString.toLowerCase()==='ok'){
+        await withdraw(instance)
+      }
     }
   } else {
     program
@@ -555,19 +521,26 @@ async function main() {
       .option('-R, --relayer <URL>', 'Withdraw via relayer')
     program
       .command('deposit <currency> <amount>')
-      .description('Submit a deposit of specified currency and amount from default eth account and return the resulting note. The currency is one of (ETH|DAI|cDAI|USDC|cUSDC|USDT). The amount depends on currency, see config.js file or visit https://tornado.cash.')
+      .description('Submit a deposit of specified currency and amount from default eth account and return the resulting note. The currency is one of (ETH|DAI|cDAI|USDC|cUSDC|USDT). The amount depends on currency, see config.js file or visit https://flexclub.cash.')
       .action(async (currency, amount) => {
         currency = currency.toLowerCase()
         await init({ rpc: program.rpc, currency, amount })
         await deposit({ currency, amount })
       })
     program
-      .command('withdraw <note> <recipient> [ETH_purchase]')
-      .description('Withdraw a note to a recipient account using relayer or specified private key. You can exchange some of your deposit`s tokens to ETH during the withdrawal by specifing ETH_purchase (e.g. 0.01) to pay for gas in future transactions. Also see the --relayer option.')
+      .command('mintNFT <note> <recipient> [ETH_purchase]')
+      .description('mintNFT a note to a recipient account using relayer or specified private key. You can exchange some of your deposit`s tokens to ETH during the withdrawal by specifing ETH_purchase (e.g. 0.01) to pay for gas in future transactions. Also see the --relayer option.')
       .action(async (noteString, recipient, refund) => {
         const { currency, amount, netId, deposit } = parseNote(noteString)
         await init({ rpc: program.rpc, noteNetId: netId, currency, amount })
-        await withdraw({ deposit, currency, amount, recipient, refund, relayerURL: program.relayer })
+        await mintNFT({ deposit, currency, recipient, refund, relayerURL: program.relayer })
+      })
+    program
+      .command('withdraw ')
+      .description('Withdraw balance amount using specified private key. You can exchange some of your deposit`s tokens to ETH during the withdrawal by specifing ETH_purchase (e.g. 0.01) to pay for gas in future transactions. Also see the --relayer option.')
+      .action(async (noteString, recipient, refund) => {
+        await init({ rpc: program.rpc, noteNetId: netId })
+        await withdraw({ refund, relayerURL: program.relayer })
       })
     program
       .command('balance <address> [token_address]')
@@ -577,6 +550,18 @@ async function main() {
         await printETHBalance({ address, name: '' })
         if (tokenAddress) {
           await printERC20Balance({ address, name: '', tokenAddress })
+        }
+      })
+    program
+      .command('balance-nft <address> [token_address]')
+      .description('Check NFT balance')
+      .action(async (address) => {
+        await init({ rpc: program.rpc })
+        await printETHBalance({ address, name: '' })
+        if (flexnft) {
+          await printNFTBalance({ address, name: '' })
+        } else {
+          console.log('failed to initialize nft contract')
         }
       })
     program

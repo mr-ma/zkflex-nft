@@ -9,12 +9,36 @@ const rpcUrl = 'https://mainnet.infura.io'
 const Web3 = require('web3')
 const web3 = new Web3(rpcUrl)
 
-const contractData = require('./build/contracts/' + (eth ? 'ETHTornado.json' : 'ERC20Tornado.json'))
+// const contractData = require('./build/contracts/' + (eth ? 'ETHTornado.json' : 'ERC20Tornado.json'))
+// const contract = new web3.eth.Contract(contractData.abi)
+// const bytes = contract
+//   .deploy({
+//     data: contractData.bytecode,
+//     arguments: [verifierAddress, hasherAddress, poolSize, 20],
+//   })
+//   .encodeABI()
+
+// console.log('Deploy bytecode', bytes)
+const tokenBaseURI = 'https://anony-flex.com/'
+const tokenName = 'ZK Flex NFT Club'
+const tokenSymbol = 'FNC'
+const minimumWaitBlocks = 5
+
+const contractData = require('./build/contracts/' + 'ETHFlexClub.json')
 const contract = new web3.eth.Contract(contractData.abi)
 const bytes = contract
   .deploy({
     data: contractData.bytecode,
-    arguments: [verifierAddress, hasherAddress, poolSize, 20],
+    arguments: [
+      verifierAddress,
+      hasherAddress,
+      poolSize,
+      tokenBaseURI,
+      tokenName,
+      tokenSymbol,
+      minimumWaitBlocks,
+      20,
+    ],
   })
   .encodeABI()
 

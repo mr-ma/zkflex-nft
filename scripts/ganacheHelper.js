@@ -41,6 +41,7 @@ const minerStart = async () => {
   await send('miner_start', [])
 }
 
+
 module.exports = {
   takeSnapshot,
   revertSnapshot,

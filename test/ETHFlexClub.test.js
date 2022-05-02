@@ -1,12 +1,15 @@
 /* global artifacts, web3, contract */
 require('chai').use(require('bn-chai')(web3.utils.BN)).use(require('chai-as-promised')).should()
+var expect = require('chai').expect
 const fs = require('fs')
 
 const { toBN, randomHex } = require('web3-utils')
-const { takeSnapshot, revertSnapshot } = require('../scripts/ganacheHelper')
+const { takeSnapshot, revertSnapshot, mineBlock } = require('../scripts/ganacheHelper')
 
-const Tornado = artifacts.require('./ETHTornado.sol')
-const { ETH_AMOUNT, MERKLE_TREE_HEIGHT } = process.env
+const FlexClub = artifacts.require('./ETHFlexClub.sol')
+const FlexNFT = artifacts.require('./FlexNFT.sol')
+
+const { ETH_AMOUNT, MERKLE_TREE_HEIGHT, Minimum_Wait_Blocks } = process.env
 
 const websnarkUtils = require('websnark/src/utils')
 const buildGroth16 = require('websnark/src/groth16')
@@ -52,8 +55,8 @@ function snarkVerify(proof) {
   return snarkjs['groth'].isValid(verification_key, proof, proof.publicSignals)
 }
 
-contract('ETHTornado', (accounts) => {
-  let tornado
+contract('ETHFlexClub', (accounts) => {
+  let flexclub, flexnft
   const sender = accounts[0]
   const operator = accounts[0]
   const levels = MERKLE_TREE_HEIGHT || 16
@@ -70,7 +73,9 @@ contract('ETHTornado', (accounts) => {
 
   before(async () => {
     tree = new MerkleTree(levels)
-    tornado = await Tornado.deployed()
+    flexclub = await FlexClub.deployed()
+    flexnft = await FlexNFT.deployed()
+    // await flexnft.initialize(flexclub.address)
     snapshotId = await takeSnapshot()
     groth16 = await buildGroth16()
     circuit = require('../build/circuits/withdraw.json')
@@ -79,22 +84,28 @@ contract('ETHTornado', (accounts) => {
 
   describe('#constructor', () => {
     it('should initialize', async () => {
-      const etherDenomination = await tornado.denomination()
+      const etherDenomination = await flexclub.denomination()
       etherDenomination.should.be.eq.BN(toBN(value))
+      const flexClubContract = await flexnft.flexClubContract()
+      expect(flexClubContract).to.be.equal(flexclub.address)
+      const isInit = await flexnft.isInitialized()
+      expect(isInit).to.be.equal(true)
+      const flexclubNFTContract = await flexclub.flexNFTContract()
+      expect(flexclubNFTContract).to.be.equal(flexnft.address)
     })
   })
 
   describe('#deposit', () => {
     it('should emit event', async () => {
       let commitment = toFixedHex(42)
-      let { logs } = await tornado.deposit(commitment, { value, from: sender })
+      let { logs } = await flexclub.deposit(commitment, { value, from: sender })
 
       logs[0].event.should.be.equal('Deposit')
       logs[0].args.commitment.should.be.equal(commitment)
       logs[0].args.leafIndex.should.be.eq.BN(0)
 
       commitment = toFixedHex(12)
-      ;({ logs } = await tornado.deposit(commitment, { value, from: accounts[2] }))
+        ; ({ logs } = await flexclub.deposit(commitment, { value, from: accounts[2] }))
 
       logs[0].event.should.be.equal('Deposit')
       logs[0].args.commitment.should.be.equal(commitment)
@@ -103,8 +114,8 @@ contract('ETHTornado', (accounts) => {
 
     it('should throw if there is a such commitment', async () => {
       const commitment = toFixedHex(42)
-      await tornado.deposit(commitment, { value, from: sender }).should.be.fulfilled
-      const error = await tornado.deposit(commitment, { value, from: sender }).should.be.rejected
+      await flexclub.deposit(commitment, { value, from: sender }).should.be.fulfilled
+      const error = await flexclub.deposit(commitment, { value, from: sender }).should.be.rejected
       error.reason.should.be.equal('The commitment has been submitted')
     })
   })
@@ -154,7 +165,7 @@ contract('ETHTornado', (accounts) => {
     })
   })
 
-  describe('#withdraw', () => {
+  describe('#mint', () => {
     it('should work', async () => {
       const deposit = generateDeposit()
       const user = accounts[4]
@@ -163,9 +174,9 @@ contract('ETHTornado', (accounts) => {
       const balanceUserBefore = await web3.eth.getBalance(user)
 
       // Uncomment to measure gas usage
-      // let gas = await tornado.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
+      // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
       // console.log('deposit gas:', gas)
-      await tornado.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
+      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
 
       const balanceUserAfter = await web3.eth.getBalance(user)
       balanceUserAfter.should.be.eq.BN(toBN(balanceUserBefore).sub(toBN(value)))
@@ -192,15 +203,18 @@ contract('ETHTornado', (accounts) => {
       const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
       const { proof } = websnarkUtils.toSolidityInput(proofData)
 
-      const balanceTornadoBefore = await web3.eth.getBalance(tornado.address)
+      const balanceFlexClubBefore = await web3.eth.getBalance(flexclub.address)
       const balanceRelayerBefore = await web3.eth.getBalance(relayer)
       const balanceOperatorBefore = await web3.eth.getBalance(operator)
       const balanceReceiverBefore = await web3.eth.getBalance(toFixedHex(recipient, 20))
-      let isSpent = await tornado.isSpent(toFixedHex(input.nullifierHash))
+
+      const balanceNFTReceiverBefore = await flexnft.balanceOf(toFixedHex(recipient, 20))
+
+      let isSpent = await flexclub.isSpent(toFixedHex(input.nullifierHash))
       isSpent.should.be.equal(false)
 
       // Uncomment to measure gas usage
-      // gas = await tornado.withdraw.estimateGas(proof, publicSignals, { from: relayer, gasPrice: '0' })
+      // gas = await flexclub.withdraw.estimateGas(proof, publicSignals, { from: relayer, gasPrice: '0' })
       // console.log('withdraw gas:', gas)
       const args = [
         toFixedHex(input.root),
@@ -210,30 +224,35 @@ contract('ETHTornado', (accounts) => {
         toFixedHex(input.fee),
         toFixedHex(input.refund),
       ]
-      const { logs } = await tornado.withdraw(proof, ...args, { from: relayer, gasPrice: '0' })
+      const { logs } = await flexclub.mintNFT(proof, ...args, { from: relayer, gasPrice: '0' })
 
-      const balanceTornadoAfter = await web3.eth.getBalance(tornado.address)
+      const balanceFlexClubAfter = await web3.eth.getBalance(flexclub.address)
       const balanceRelayerAfter = await web3.eth.getBalance(relayer)
       const balanceOperatorAfter = await web3.eth.getBalance(operator)
       const balanceReceiverAfter = await web3.eth.getBalance(toFixedHex(recipient, 20))
-      const feeBN = toBN(fee.toString())
-      balanceTornadoAfter.should.be.eq.BN(toBN(balanceTornadoBefore).sub(toBN(value)))
-      balanceRelayerAfter.should.be.eq.BN(toBN(balanceRelayerBefore))
-      balanceOperatorAfter.should.be.eq.BN(toBN(balanceOperatorBefore).add(feeBN))
-      balanceReceiverAfter.should.be.eq.BN(toBN(balanceReceiverBefore).add(toBN(value)).sub(feeBN))
+      const balanceNFTReceiverAfter = await flexnft.balanceOf(toFixedHex(recipient, 20))
 
-      logs[0].event.should.be.equal('Withdrawal')
+      const feeBN = toBN(fee.toString())
+      balanceFlexClubAfter.should.be.eq.BN(toBN(balanceFlexClubBefore)) //.sub(toBN(value)))
+      balanceRelayerAfter.should.be.eq.BN(toBN(balanceRelayerBefore))
+      balanceOperatorAfter.should.be.eq.BN(toBN(balanceOperatorBefore)) //.add(feeBN))
+      balanceReceiverAfter.should.be.eq.BN(toBN(balanceReceiverBefore)) //.add(toBN(value)).sub(feeBN))
+
+      //assert if receiver got one NFT token
+      balanceNFTReceiverAfter.should.be.eq.BN(toBN(balanceNFTReceiverBefore).add(toBN('1')))
+
+      logs[0].event.should.be.equal('NFTMint')
       logs[0].args.nullifierHash.should.be.equal(toFixedHex(input.nullifierHash))
       logs[0].args.relayer.should.be.eq.BN(operator)
       logs[0].args.fee.should.be.eq.BN(feeBN)
-      isSpent = await tornado.isSpent(toFixedHex(input.nullifierHash))
+      isSpent = await flexclub.isSpent(toFixedHex(input.nullifierHash))
       isSpent.should.be.equal(true)
     })
 
     it('should prevent double spend', async () => {
       const deposit = generateDeposit()
       tree.insert(deposit.commitment)
-      await tornado.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
       const { pathElements, pathIndices } = tree.path(0)
 
@@ -259,15 +278,15 @@ contract('ETHTornado', (accounts) => {
         toFixedHex(input.fee),
         toFixedHex(input.refund),
       ]
-      await tornado.withdraw(proof, ...args, { from: relayer }).should.be.fulfilled
-      const error = await tornado.withdraw(proof, ...args, { from: relayer }).should.be.rejected
+      await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.fulfilled
+      const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
       error.reason.should.be.equal('The note has been already spent')
     })
 
     it('should prevent double spend with overflow', async () => {
       const deposit = generateDeposit()
       tree.insert(deposit.commitment)
-      await tornado.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
       const { pathElements, pathIndices } = tree.path(0)
 
@@ -297,48 +316,48 @@ contract('ETHTornado', (accounts) => {
         toFixedHex(input.fee),
         toFixedHex(input.refund),
       ]
-      const error = await tornado.withdraw(proof, ...args, { from: relayer }).should.be.rejected
+      const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
       error.reason.should.be.equal('verifier-gte-snark-scalar-field')
     })
 
-    it('fee should be less or equal transfer value', async () => {
-      const deposit = generateDeposit()
-      tree.insert(deposit.commitment)
-      await tornado.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+    // it('fee should be less or equal transfer value', async () => {
+    //   const deposit = generateDeposit()
+    //   tree.insert(deposit.commitment)
+    //   await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
-      const { pathElements, pathIndices } = tree.path(0)
-      const largeFee = bigInt(value).add(bigInt(1))
-      const input = stringifyBigInts({
-        root: tree.root(),
-        nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
-        nullifier: deposit.nullifier,
-        relayer: operator,
-        recipient,
-        fee: largeFee,
-        refund,
-        secret: deposit.secret,
-        pathElements: pathElements,
-        pathIndices: pathIndices,
-      })
+    //   const { pathElements, pathIndices } = tree.path(0)
+    //   const largeFee = bigInt(value).add(bigInt(1))
+    //   const input = stringifyBigInts({
+    //     root: tree.root(),
+    //     nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+    //     nullifier: deposit.nullifier,
+    //     relayer: operator,
+    //     recipient,
+    //     fee: largeFee,
+    //     refund,
+    //     secret: deposit.secret,
+    //     pathElements: pathElements,
+    //     pathIndices: pathIndices,
+    //   })
 
-      const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-      const { proof } = websnarkUtils.toSolidityInput(proofData)
-      const args = [
-        toFixedHex(input.root),
-        toFixedHex(input.nullifierHash),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      const error = await tornado.withdraw(proof, ...args, { from: relayer }).should.be.rejected
-      error.reason.should.be.equal('Fee exceeds transfer value')
-    })
+    //   const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+    //   const { proof } = websnarkUtils.toSolidityInput(proofData)
+    //   const args = [
+    //     toFixedHex(input.root),
+    //     toFixedHex(input.nullifierHash),
+    //     toFixedHex(input.recipient, 20),
+    //     toFixedHex(input.relayer, 20),
+    //     toFixedHex(input.fee),
+    //     toFixedHex(input.refund),
+    //   ]
+    //   const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
+    //   error.reason.should.be.equal('Fee exceeds transfer value')
+    // })
 
     it('should throw for corrupted merkle tree root', async () => {
       const deposit = generateDeposit()
       tree.insert(deposit.commitment)
-      await tornado.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
       const { pathElements, pathIndices } = tree.path(0)
 
@@ -366,14 +385,14 @@ contract('ETHTornado', (accounts) => {
         toFixedHex(input.fee),
         toFixedHex(input.refund),
       ]
-      const error = await tornado.withdraw(proof, ...args, { from: relayer }).should.be.rejected
+      const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
       error.reason.should.be.equal('Cannot find your merkle root')
     })
 
     it('should reject with tampered public inputs', async () => {
       const deposit = generateDeposit()
       tree.insert(deposit.commitment)
-      await tornado.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
       let { pathElements, pathIndices } = tree.path(0)
 
@@ -411,7 +430,7 @@ contract('ETHTornado', (accounts) => {
         toFixedHex(input.fee),
         toFixedHex(input.refund),
       ]
-      let error = await tornado.withdraw(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
+      let error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
       error.reason.should.be.equal('Invalid withdraw proof')
 
       // fee
@@ -423,7 +442,7 @@ contract('ETHTornado', (accounts) => {
         toFixedHex('0x000000000000000000000000000000000000000000000000015345785d8a0000'),
         toFixedHex(input.refund),
       ]
-      error = await tornado.withdraw(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
+      error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
       error.reason.should.be.equal('Invalid withdraw proof')
 
       // nullifier
@@ -435,21 +454,21 @@ contract('ETHTornado', (accounts) => {
         toFixedHex(input.fee),
         toFixedHex(input.refund),
       ]
-      error = await tornado.withdraw(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
+      error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
       error.reason.should.be.equal('Invalid withdraw proof')
 
       // proof itself
       proof = '0xbeef' + proof.substr(6)
-      await tornado.withdraw(proof, ...args, { from: relayer }).should.be.rejected
+      await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
 
       // should work with original values
-      await tornado.withdraw(originalProof, ...args, { from: relayer }).should.be.fulfilled
+      await flexclub.mintNFT(originalProof, ...args, { from: relayer }).should.be.fulfilled
     })
 
     it('should reject with non zero refund', async () => {
       const deposit = generateDeposit()
       tree.insert(deposit.commitment)
-      await tornado.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
       const { pathElements, pathIndices } = tree.path(0)
 
@@ -477,9 +496,106 @@ contract('ETHTornado', (accounts) => {
         toFixedHex(input.fee),
         toFixedHex(input.refund),
       ]
-      const error = await tornado.withdraw(proof, ...args, { from: relayer }).should.be.rejected
-      error.reason.should.be.equal('Refund value is supposed to be zero for ETH instance')
+      const error = await flexclub.mintNFT(proof, ...args, { value, from: relayer }).should.be.rejected
+      error.reason.should.be.equal('Message value is supposed to be zero for ETH instance')
     })
+  })
+
+  describe('#withdraw balance', () => {
+    it('should work', async () => {
+      const deposit = generateDeposit()
+      const user = accounts[4]
+      tree.insert(deposit.commitment)
+
+      const balanceUserBefore = await web3.eth.getBalance(user)
+
+      // Uncomment to measure gas usage
+      // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
+      // console.log('deposit gas:', gas)
+      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
+
+      const balanceUserAfter = await web3.eth.getBalance(user)
+      balanceUserAfter.should.be.eq.BN(toBN(balanceUserBefore).sub(toBN(value)))
+
+      const balanceFlexClubBefore = await web3.eth.getBalance(flexclub.address)
+
+      //mine the required number of blocks
+      for (let index = 0; index < Minimum_Wait_Blocks; index++) {
+        await mineBlock()
+      }
+
+      const { logs } = await flexclub.withdraw({ from: user, gasPrice: '0' })
+
+      const balanceFlexClubAfter = await web3.eth.getBalance(flexclub.address)
+      const balanceUserAfterWithdraw = await web3.eth.getBalance(user)
+
+      balanceFlexClubAfter.should.be.eq.BN(toBN(balanceFlexClubBefore).sub(toBN(value)))
+      balanceUserAfterWithdraw.should.be.eq.BN(toBN(balanceUserBefore)) //.add(toBN(value)).sub(feeBN))
+
+      logs[0].event.should.be.equal('Withdrawal')
+    })
+    it('should reject with min wait blocks not met', async () => {
+      const deposit = generateDeposit()
+      const user = accounts[4]
+      tree.insert(deposit.commitment)
+
+      // Uncomment to measure gas usage
+      // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
+      // console.log('deposit gas:', gas)
+      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
+
+      //mine the required number of blocks
+      // for (let index = 0; index < Minimum_Wait_Blocks; index++) {
+      //   await mineBlock()
+      // }
+      const error = await flexclub.withdraw({ from: user, gasPrice: '0' }).should.be.rejected
+      error.reason.should.be.equal('min wait blocks not met')
+    })
+    // it('should work with multiple deposits', async () => {
+    //   const deposit = generateDeposit()
+    //   const user = accounts[4]
+    //   tree.insert(deposit.commitment)
+
+    //   const balanceUserBeforeFirstDeposit = await web3.eth.getBalance(user)
+
+    //   // Uncomment to measure gas usage
+    //   // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
+    //   // console.log('deposit gas:', gas)
+    //   await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
+
+    //   const balanceUserAfterFirstDeposit = await web3.eth.getBalance(user)
+    //   balanceUserAfterFirstDeposit.should.be.eq.BN(toBN(balanceUserBeforeFirstDeposit).sub(toBN(value)))
+
+    //   const depositSecond = generateDeposit()
+    //   tree.insert(depositSecond.commitment)
+
+    //   const balanceUserBeforeSecondDeposit = await web3.eth.getBalance(user)
+
+    //   // Uncomment to measure gas usage
+    //   // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
+    //   // console.log('deposit gas:', gas)
+    //   await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
+
+    //   const balanceUserAfterSecondDeposit = await web3.eth.getBalance(user)
+    //   balanceUserAfterSecondDeposit.should.be.eq.BN(toBN(balanceUserBeforeSecondDeposit).sub(toBN(value)))
+
+    //   const balanceFlexClubBefore = await web3.eth.getBalance(flexclub.address)
+
+    //   //mine the required number of blocks
+    //   for (let index = 0; index < Minimum_Wait_Blocks; index++) {
+    //     await mineBlock()
+    //   }
+
+    //   const { logs } = await flexclub.withdraw({ from: user, gasPrice: '0' })
+
+    //   const balanceFlexClubAfter = await web3.eth.getBalance(flexclub.address)
+    //   const balanceUserAfterWithdraw = await web3.eth.getBalance(user)
+
+    //   balanceFlexClubAfter.should.be.eq.BN(toBN(balanceFlexClubBefore).sub(toBN(value)).sub(toBN(value)))
+    //   balanceUserAfterWithdraw.should.be.eq.BN(toBN(balanceUserBeforeFirstDeposit)) //.add(toBN(value)).sub(feeBN))
+
+    //   logs[0].event.should.be.equal('Withdrawal')
+    // })
   })
 
   describe('#isSpent', () => {
@@ -488,8 +604,8 @@ contract('ETHTornado', (accounts) => {
       const deposit2 = generateDeposit()
       tree.insert(deposit1.commitment)
       tree.insert(deposit2.commitment)
-      await tornado.deposit(toFixedHex(deposit1.commitment), { value, gasPrice: '0' })
-      await tornado.deposit(toFixedHex(deposit2.commitment), { value, gasPrice: '0' })
+      await flexclub.deposit(toFixedHex(deposit1.commitment), { value, gasPrice: '0' })
+      await flexclub.deposit(toFixedHex(deposit2.commitment), { value, gasPrice: '0' })
 
       const { pathElements, pathIndices } = tree.path(1)
 
@@ -522,11 +638,11 @@ contract('ETHTornado', (accounts) => {
         toFixedHex(input.refund),
       ]
 
-      await tornado.withdraw(proof, ...args, { from: relayer, gasPrice: '0' })
+      await flexclub.mintNFT(proof, ...args, { from: relayer, gasPrice: '0' })
 
       const nullifierHash1 = toFixedHex(pedersenHash(deposit1.nullifier.leInt2Buff(31)))
       const nullifierHash2 = toFixedHex(pedersenHash(deposit2.nullifier.leInt2Buff(31)))
-      const spentArray = await tornado.isSpentArray([nullifierHash1, nullifierHash2])
+      const spentArray = await flexclub.isSpentArray([nullifierHash1, nullifierHash2])
       spentArray.should.be.deep.equal([false, true])
     })
   })

@@ -1,14 +1,3 @@
-// https://tornado.cash
-/*
- * d888888P                                           dP              a88888b.                   dP
- *    88                                              88             d8'   `88                   88
- *    88    .d8888b. 88d888b. 88d888b. .d8888b. .d888b88 .d8888b.    88        .d8888b. .d8888b. 88d888b.
- *    88    88'  `88 88'  `88 88'  `88 88'  `88 88'  `88 88'  `88    88        88'  `88 Y8ooooo. 88'  `88
- *    88    88.  .88 88       88    88 88.  .88 88.  .88 88.  .88 dP Y8.   .88 88.  .88       88 88    88
- *    dP    `88888P' dP       dP    dP `88888P8 `88888P8 `88888P' 88  Y88888P' `88888P8 `88888P' dP    dP
- * ooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo
- */
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.0;
 
@@ -19,16 +8,20 @@ interface IVerifier {
   function verifyProof(bytes memory _proof, uint256[6] memory _input) external returns (bool);
 }
 
-abstract contract Tornado is MerkleTreeWithHistory, ReentrancyGuard {
+abstract contract FlexClub is MerkleTreeWithHistory, ReentrancyGuard {
   IVerifier public immutable verifier;
   uint256 public denomination;
+  
 
+  
+  
   mapping(bytes32 => bool) public nullifierHashes;
   // we store all commitments just to prevent accidental deposits with the same commitment
   mapping(bytes32 => bool) public commitments;
 
   event Deposit(bytes32 indexed commitment, uint32 leafIndex, uint256 timestamp);
-  event Withdrawal(address to, bytes32 nullifierHash, address indexed relayer, uint256 fee);
+  event NFTMint(address to, bytes32 nullifierHash, address indexed relayer, uint256 fee);
+  event Withdrawal(address to);
 
   /**
     @dev The constructor
@@ -66,14 +59,28 @@ abstract contract Tornado is MerkleTreeWithHistory, ReentrancyGuard {
   function _processDeposit() internal virtual;
 
   /**
-    @dev Withdraw a deposit from the contract. `proof` is a zkSNARK proof data, and input is an array of circuit public inputs
+    @dev Withdraw a deposit from the contract. A wait time is enforced to prevent flash loans. 
+  */
+  function withdraw(
+  ) external nonReentrant {
+    _processWithdraw(msg.sender);
+    emit Withdrawal(msg.sender);
+  }
+    /** @dev this function is defined in a child contract */
+  function _processWithdraw(
+    address payable _recipient
+  ) internal virtual;
+
+
+    /**
+    @dev mintNFT mints flex NFT from the contract. `proof` is a zkSNARK proof data, and input is an array of circuit public inputs
     `input` array consists of:
       - merkle root of all deposits in the contract
       - hash of unique deposit nullifier to prevent double spends
       - the recipient of funds
       - optional fee that goes to the transaction sender (usually a relay)
   */
-  function withdraw(
+  function mintNFT(
     bytes calldata _proof,
     bytes32 _root,
     bytes32 _nullifierHash,
@@ -94,16 +101,15 @@ abstract contract Tornado is MerkleTreeWithHistory, ReentrancyGuard {
     );
 
     nullifierHashes[_nullifierHash] = true;
-    _processWithdraw(_recipient, _relayer, _fee, _refund);
-    emit Withdrawal(_recipient, _nullifierHash, _relayer, _fee);
+    _processMint(_recipient, _relayer, _fee);
+    emit NFTMint(_recipient, _nullifierHash, _relayer, _fee);
   }
 
   /** @dev this function is defined in a child contract */
-  function _processWithdraw(
+  function _processMint(
     address payable _recipient,
     address payable _relayer,
-    uint256 _fee,
-    uint256 _refund
+    uint256 _fee
   ) internal virtual;
 
   /** @dev whether a note is already spent */
