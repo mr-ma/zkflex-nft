@@ -35,6 +35,18 @@ contract ETHFlexClub is FlexClub {
         return address(flexNFTContract);
     }
 
+    function getBalance() view external returns (uint256){
+        return _balances[msg.sender];
+    }
+
+    function getDepositBlock() view external returns (uint) {
+        return _depositBlocks[msg.sender];
+    }
+
+    function getMinimumWaitBlocks() view external returns (uint) {
+        return MINIMUM_WAIT_BLOCKS;
+    }
+
     function _processDeposit() internal override {
         require(msg.value == denomination, "Please send `mixDenomination` ETH along with transaction");
         _balances[msg.sender] = _balances[msg.sender].add(msg.value);
