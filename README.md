@@ -1,4 +1,4 @@
-# ZKFlex NFT (built from [tornado-core](https://github.com/tornadocash/tornado-cli))
+# ZKFlex NFT (built from [tornado-core](https://github.com/tornadocash/tornado-core))
 
 ## Requirements
 
