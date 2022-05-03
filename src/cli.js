@@ -19,7 +19,7 @@ const config = require('./config')
 const program = require('commander')
 
 let web3, flexclub, flexnft, nftAddress, circuit, proving_key, groth16, erc20, erc721, senderAccount, netId
-let MERKLE_TREE_HEIGHT, ETH_AMOUNT, TOKEN_AMOUNT, PRIVATE_KEY
+let MERKLE_TREE_HEIGHT, ETH_AMOUNT, PRIVATE_KEY, GENESIS_BLOCK
 
 /** Whether we are in a browser or node.js */
 const inBrowser = (typeof window !== 'undefined')
@@ -78,36 +78,52 @@ async function deposit({ currency, amount }) {
   const note = toHex(deposit.preimage, 62)
   const noteString = `flexclub-${currency}-${amount}-${netId}-${note}`
   console.log(`Your note: ${noteString}`)
-  if (currency === 'eth') {
-    await printETHBalance({ address: flexclub._address, name: 'Tornado' })
-    await printETHBalance({ address: senderAccount, name: 'Sender account' })
-    const value = isLocalRPC ? ETH_AMOUNT : fromDecimals({ amount, decimals: 18 })
-    console.log('Submitting deposit transaction')
-    await flexclub.methods.deposit(toHex(deposit.commitment)).send({ value, from: senderAccount, gas: 2e6 })
-    await printETHBalance({ address: flexclub._address, name: 'Tornado' })
-    await printETHBalance({ address: senderAccount, name: 'Sender account' })
-  } else { // a token
-    await printERC20Balance({ address: flexclub._address, name: 'Tornado' })
-    await printERC20Balance({ address: senderAccount, name: 'Sender account' })
-    const decimals = isLocalRPC ? 18 : config.deployments[`netId${netId}`][currency].decimals
-    const tokenAmount = isLocalRPC ? TOKEN_AMOUNT : fromDecimals({ amount, decimals })
-    if (isLocalRPC) {
-      console.log('Minting some test tokens to deposit')
-      await erc20.methods.mint(senderAccount, tokenAmount).send({ from: senderAccount, gas: 2e6 })
-    }
 
-    const allowance = await erc20.methods.allowance(senderAccount, flexclub._address).call({ from: senderAccount })
-    console.log('Current allowance is', fromWei(allowance))
-    if (toBN(allowance).lt(toBN(tokenAmount))) {
-      console.log('Approving tokens for deposit')
-      await erc20.methods.approve(flexclub._address, tokenAmount).send({ from: senderAccount, gas: 1e6 })
+  // if (currency === 'eth') {
+  await printETHBalance({ address: flexclub._address, name: 'Tornado' })
+  await printETHBalance({ address: senderAccount, name: 'Sender account' })
+  const value = isLocalRPC ? ETH_AMOUNT : fromDecimals({ amount, decimals: 18 })
+  console.log('Submitting deposit transaction')
+  await flexclub.methods.deposit(toHex(deposit.commitment)).send({ value, from: senderAccount, gas: 2e6 }).on('transactionHash', function (txHash) {
+    if (netId === 1 || netId === 42) {
+      console.log(`View transaction on etherscan https://${getCurrentNetworkName()}etherscan.io/tx/${txHash}`)
+    } else {
+      console.log(`The transaction hash is ${txHash}`)
     }
+    if(inBrowser) {
+      document.getElementById('deposit-note-textarea').value = noteString
+      alert('Store your note: '+ noteString)
+    }
+  }).on('error', function (e) {
+    console.error('on transactionHash error', e.message)
+    if (inBrowser) {
+      alert('Failed to deposit!\n' + e.message)
+    }
+  })
+  await printETHBalance({ address: flexclub._address, name: 'Tornado' })
+  await printETHBalance({ address: senderAccount, name: 'Sender account' })
+  // } else { // a token
+  // await printERC20Balance({ address: flexclub._address, name: 'Tornado' })
+  // await printERC20Balance({ address: senderAccount, name: 'Sender account' })
+  // const decimals = isLocalRPC ? 18 : config.deployments[`netId${netId}`][currency].decimals
+  // const tokenAmount = isLocalRPC ? TOKEN_AMOUNT : fromDecimals({ amount, decimals })
+  // if (isLocalRPC) {
+  //   console.log('Minting some test tokens to deposit')
+  //   await erc20.methods.mint(senderAccount, tokenAmount).send({ from: senderAccount, gas: 2e6 })
+  // }
 
-    console.log('Submitting deposit transaction')
-    await flexclub.methods.deposit(toHex(deposit.commitment)).send({ from: senderAccount, gas: 2e6 })
-    await printERC20Balance({ address: flexclub._address, name: 'Tornado' })
-    await printERC20Balance({ address: senderAccount, name: 'Sender account' })
-  }
+  // const allowance = await erc20.methods.allowance(senderAccount, flexclub._address).call({ from: senderAccount })
+  // console.log('Current allowance is', fromWei(allowance))
+  // if (toBN(allowance).lt(toBN(tokenAmount))) {
+  //   console.log('Approving tokens for deposit')
+  //   await erc20.methods.approve(flexclub._address, tokenAmount).send({ from: senderAccount, gas: 1e6 })
+  // }
+
+  // console.log('Submitting deposit transaction')
+  // await flexclub.methods.deposit(toHex(deposit.commitment)).send({ from: senderAccount, gas: 2e6 })
+  // await printERC20Balance({ address: flexclub._address, name: 'Tornado' })
+  // await printERC20Balance({ address: senderAccount, name: 'Sender account' })
+  // }
 
   return noteString
 }
@@ -121,7 +137,7 @@ async function deposit({ currency, amount }) {
 async function generateMerkleProof(deposit) {
   // Get all deposit events from smart contract and assemble merkle tree from them
   console.log('Getting current state from flexclub contract')
-  const events = await flexclub.getPastEvents('Deposit', { fromBlock: 0, toBlock: 'latest' })
+  const events = await flexclub.getPastEvents('Deposit', { fromBlock: GENESIS_BLOCK, toBlock: 'latest' })
   const leaves = events
     .sort((a, b) => a.returnValues.leafIndex - b.returnValues.leafIndex) // Sort events in chronological order
     .map(e => e.returnValues.commitment)
@@ -194,7 +210,7 @@ async function generateProof({ deposit, recipient, relayerAddress = 0, fee = 0, 
 /**
  * Do a mint NFT
  */
-async function mintNFT({ deposit, currency, recipient, relayerURL='', refund = '0' }) {
+async function mintNFT({ deposit, currency, recipient, relayerURL = '', refund = '0' }) {
   if (currency === 'eth' && refund !== '0') {
     throw new Error('The ETH purchase is supposed to be 0 for ETH withdrawals')
   }
@@ -214,6 +230,9 @@ async function mintNFT({ deposit, currency, recipient, relayerURL='', refund = '
         }
       }).on('error', function (e) {
         console.error('on transactionHash error', e.message)
+        if (inBrowser) {
+          alert('Failed to mint!\n' + e.message)
+        }
       })
   }
   console.log('Done')
@@ -241,6 +260,9 @@ async function withdraw({ currency = 'eth', relayerURL = '', refund = '0' }) {
         }
       }).on('error', function (e) {
         console.error('on transactionHash error', e.message)
+        if (inBrowser) {
+          alert('Failed to withdraw!\n' + e.message)
+        }
       })
   }
   console.log('Done')
@@ -337,10 +359,10 @@ function toDecimals(value, decimals, fixed) {
 
 function getCurrentNetworkName() {
   switch (netId) {
-  case 1:
-    return ''
-  case 42:
-    return 'kovan.'
+    case 1:
+      return ''
+    case 42:
+      return 'kovan.'
   }
 
 }
@@ -354,8 +376,12 @@ function parseNote(noteString) {
   const noteRegex = /flexclub-(?<currency>\w+)-(?<amount>[\d.]+)-(?<netId>\d+)-0x(?<note>[0-9a-fA-F]{124})/g
   const match = noteRegex.exec(noteString)
   if (!match) {
+    if (inBrowser) {
+      alert('The note has invalid format')
+    }
     throw new Error('The note has invalid format')
   }
+  
 
   const buf = Buffer.from(match.groups.note, 'hex')
   const nullifier = bigInt.leBuff2int(buf.slice(0, 31))
@@ -423,31 +449,40 @@ async function loadWithdrawalData({ amount, currency, deposit }) {
 /**
  * Init web3, contracts, and snark
  */
-async function init({ rpc, noteNetId, currency = 'dai', amount = '100' }) {
-  let contractJson, contractNFTJson, erc20ContractJson, /*erc20flexclubJson,*/ flexclubAddress, tokenAddress
+async function init({ rpc, noteNetId, currency }) {
+  let contractJson, configsJson, contractNFTJson, erc20ContractJson, /*erc20flexclubJson,*/ flexclubAddress, tokenAddress
   // TODO do we need this? should it work in browser really?
   if (inBrowser) {
     // Initialize using injected web3 (Metamask)
     // To assemble web version run `npm run browserify`
-    web3 = new Web3(window.web3.currentProvider, null, { transactionConfirmationBlocks: 1 })
-    contractJson = await (await fetch('build/contracts/ETHFlexClub.json')).json()
-    contractNFTJson = await (await fetch('build/contracts/FlexNFT.json')).json()
-    circuit = await (await fetch('build/circuits/withdraw.json')).json()
-    proving_key = await (await fetch('build/circuits/withdraw_proving_key.bin')).arrayBuffer()
+    if (window.ethereum) {
+      await window.ethereum.request({ method: 'eth_requestAccounts' })
+      web3 = new Web3(window.ethereum)
+    } else {
+      console.log('Not connected to metamask!!')
+      return
+    }
+
+    // web3 = new Web3(window.web3.currentProvider, null, { transactionConfirmationBlocks: 1 })
+    configsJson = await (await fetch('config.json')).json()
+    contractJson = await (await fetch('assets/json/ETHFlexClub.json')).json()
+    contractNFTJson = await (await fetch('assets/json/FlexNFT.json')).json()
+    circuit = await (await fetch('assets/json/withdraw.json')).json()
+    proving_key = await (await fetch('assets/bin/withdraw_proving_key.bin')).arrayBuffer()
     MERKLE_TREE_HEIGHT = 20
-    ETH_AMOUNT = 1e18
-    TOKEN_AMOUNT = 1e19
+    ETH_AMOUNT = configsJson.eth_amount
+    GENESIS_BLOCK = configsJson.genesis_block
     senderAccount = (await web3.eth.getAccounts())[0]
   } else {
     // Initialize from local node
     web3 = new Web3(rpc, null, { transactionConfirmationBlocks: 1 })
+    GENESIS_BLOCK = 0
     contractJson = require(__dirname + '/../build/contracts/ETHFlexClub.json')
     contractNFTJson = require(__dirname + '/../build/contracts/FlexNFT.json')
     circuit = require(__dirname + '/../build/circuits/withdraw.json')
     proving_key = fs.readFileSync(__dirname + '/../build/circuits/withdraw_proving_key.bin').buffer
     MERKLE_TREE_HEIGHT = process.env.MERKLE_TREE_HEIGHT || 20
     ETH_AMOUNT = process.env.ETH_AMOUNT
-    TOKEN_AMOUNT = process.env.TOKEN_AMOUNT
     PRIVATE_KEY = process.env.PRIVATE_KEY
     if (PRIVATE_KEY) {
       const account = web3.eth.accounts.privateKeyToAccount('0x' + PRIVATE_KEY)
@@ -469,40 +504,37 @@ async function init({ rpc, noteNetId, currency = 'dai', amount = '100' }) {
   console.log('netId:', netId)
   isLocalRPC = netId > 42
 
-  if (isLocalRPC) {
-    console.log('in LocalRPC')
-    flexclubAddress = /*currency === 'eth' ?*/ contractJson.networks[netId].address// : erc20flexclubJson.networks[netId].address
-    tokenAddress = /*currency !== 'eth' ? erc20ContractJson.networks[netId].address :*/ null
-    nftAddress = contractNFTJson.networks[netId].address
-    senderAccount = (await web3.eth.getAccounts())[0]
-  } else {
-    try {
-      flexclubAddress = config.deployments[`netId${netId}`][currency].instanceAddress[amount]
-      if (!flexclubAddress) {
-        throw new Error()
-      }
-      tokenAddress = config.deployments[`netId${netId}`][currency].tokenAddress
-      nftAddress = config.deployments[`netId${netId}`].nftAddress
-    } catch (e) {
-      console.error('There is no such flexclub instance, check the currency and amount you provide')
-      process.exit(1)
-    }
-  }
+  flexclubAddress = /*currency === 'eth' ?*/ configsJson.flexclub_address// : erc20flexclubJson.networks[netId].address
+  tokenAddress = /*currency !== 'eth' ? erc20ContractJson.networks[netId].address :*/ null
+  nftAddress = configsJson.nft_address
+  senderAccount = (await web3.eth.getAccounts())[0]
+
   flexclub = new web3.eth.Contract(contractJson.abi, flexclubAddress)
   erc20 = currency !== 'eth' ? new web3.eth.Contract(erc20ContractJson.abi, tokenAddress) : {}
   flexnft = new web3.eth.Contract(contractNFTJson.abi, nftAddress)
-  console.log('nftAddress:',nftAddress)
+  console.log('nftAddress:', nftAddress)
 }
 
 async function main() {
   if (inBrowser) {
-    const instance = { currency: 'eth', amount: '0.1' }
+    let instance = { currency: 'eth' }
     await init(instance)
+    instance = { currency: 'eth' , amount: ETH_AMOUNT }
+    window.connect = async () => {
+      if (window.ethereum) {
+        await window.ethereum.request({ method: 'eth_requestAccounts' })
+        web3 = new Web3(window.ethereum)
+      } else {
+        alert('Not able to connect to metamask!!')
+        return
+      }
+    }
     window.deposit = async () => {
       await deposit(instance)
     }
     window.mintNFT = async () => {
-      const noteString = prompt('Enter the note to mintNFT')
+      // const noteString = prompt('Enter the note to mintNFT')
+      const noteString = document.getElementById('mint-note-textarea').value
       const recipient = (await web3.eth.getAccounts())[0]
 
       const { currency, amount, netId, deposit } = parseNote(noteString)
@@ -511,7 +543,7 @@ async function main() {
     }
     window.withdraw = async () => {
       const noteString = prompt('Wait the minimum block numbers to withdraw (type OK)')
-      if(noteString.toLowerCase()==='ok'){
+      if (noteString.toLowerCase() === 'ok') {
         await withdraw(instance)
       }
     }
@@ -609,7 +641,7 @@ async function main() {
         amount = '100'
         await init({ rpc: program.rpc, currency, amount })
         noteString = await deposit({ currency, amount })
-        ; (parsedNote = parseNote(noteString))
+          ; (parsedNote = parseNote(noteString))
         await withdraw({ deposit: parsedNote.deposit, currency, amount, recipient: senderAccount, refund: '0.02', relayerURL: program.relayer })
       })
     try {

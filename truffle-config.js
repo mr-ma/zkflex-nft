@@ -1,6 +1,23 @@
 require('dotenv').config()
+const { TruffleProvider } = require("@harmony-js/core")
+
 const HDWalletProvider = require('@truffle/hdwallet-provider')
 const utils = require('web3-utils')
+
+
+//Local
+const local_mnemonic = process.env.LOCAL_MNEMONIC
+const local_private_key = process.env.LOCAL_PRIVATE_KEY
+const local_url = process.env.LOCAL_0_URL
+
+//Testnet
+const testnet_mnemonic = process.env.TESTNET_MNEMONIC
+const testnet_private_key = process.env.TESTNET_PRIVATE_KEY
+const testnet_url = process.env.TESTNET_0_URL
+
+//GAS - Currently using same GAS accross all environments
+const gasLimit = process.env.GAS_LIMIT
+const gasPrice = process.env.GAS_PRICE
 
 module.exports = {
   /**
@@ -18,6 +35,34 @@ module.exports = {
       host: '127.0.0.1', // Localhost (default: none)
       port: 8545, // Standard Ethereum port (default: none)
       network_id: '*', // Any network (default: none)
+    },
+    local: {
+      network_id: '2', // Any network (default: none)
+      provider: () => {
+        const truffleProvider = new TruffleProvider(
+          local_url,
+          { memonic: local_mnemonic },
+          { shardID: 0, chainId: 2 },
+          { gasLimit: gasLimit, gasPrice: gasPrice },
+        )
+        const newAcc = truffleProvider.addByPrivateKey(local_private_key)
+        truffleProvider.setSigner(newAcc)
+        return truffleProvider
+      },
+    },
+    testnet: {
+      network_id: '2', // Any network (default: none)
+      provider: () => {
+        const truffleProvider = new TruffleProvider(
+          testnet_url,
+          { memonic: testnet_mnemonic },
+          { shardID: 0, chainId: 2 },
+          { gasLimit: gasLimit * 9000, gasPrice: gasPrice * 9000 },
+        )
+        const newAcc = truffleProvider.addByPrivateKey(testnet_private_key)
+        truffleProvider.setSigner(newAcc)
+        return truffleProvider
+      },
     },
     kovan: {
       provider: () =>

@@ -1,5 +1,6 @@
 /* global artifacts */
 require('dotenv').config({ path: '../.env' })
+var fs = require('fs')
 
 const ETHFlexClub = artifacts.require('ETHFlexClub')
 const FlexNFT = artifacts.require('FlexNFT')
@@ -31,5 +32,12 @@ module.exports = function (deployer) {
     )
     await flexnft.initialize(flexclub.address)
     console.log('ETHFlexClub address', flexclub.address)
+    var obj = {
+      flexclub_address: flexclub.address,
+      flexnft_address: flexnft.address,
+      eth_amount: ETH_AMOUNT,
+      genesis_block: 24808523, //merkle root computed from here on
+    }
+    fs.writeFileSync('config.json', JSON.stringify(obj))
   })
 }
