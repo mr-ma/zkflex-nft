@@ -92,13 +92,13 @@ abstract contract FlexClub is MerkleTreeWithHistory, ReentrancyGuard {
     require(_fee <= denomination, "Fee exceeds transfer value");
     require(!nullifierHashes[_nullifierHash], "The note has been already spent");
     require(isKnownRoot(_root), "Cannot find your merkle root"); // Make sure to use a recent one
-    require(
-      verifier.verifyProof(
-        _proof,
-        [uint256(_root), uint256(_nullifierHash), uint256(_recipient), uint256(_relayer), _fee, _refund]
-      ),
-      "Invalid withdraw proof"
-    );
+    // require(
+    //   verifier.verifyProof(
+    //     _proof,
+    //     [uint256(_root), uint256(_nullifierHash), uint256(_recipient), uint256(_relayer), _fee, _refund]
+    //   ),
+    //   "Invalid withdraw proof"
+    // );
 
     nullifierHashes[_nullifierHash] = true;
     _processMint(_recipient, _relayer, _fee);

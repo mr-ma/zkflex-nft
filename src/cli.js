@@ -90,9 +90,9 @@ async function deposit({ currency, amount }) {
     } else {
       console.log(`The transaction hash is ${txHash}`)
     }
-    if(inBrowser) {
+    if (inBrowser) {
       document.getElementById('deposit-note-textarea').value = noteString
-      alert('Store your note: '+ noteString)
+      alert('Store your note: ' + noteString)
     }
   }).on('error', function (e) {
     console.error('on transactionHash error', e.message)
@@ -381,7 +381,7 @@ function parseNote(noteString) {
     }
     throw new Error('The note has invalid format')
   }
-  
+
 
   const buf = Buffer.from(match.groups.note, 'hex')
   const nullifier = bigInt.leBuff2int(buf.slice(0, 31))
@@ -452,6 +452,7 @@ async function loadWithdrawalData({ amount, currency, deposit }) {
 async function init({ rpc, noteNetId, currency }) {
   let contractJson, configsJson, contractNFTJson, erc20ContractJson, /*erc20flexclubJson,*/ flexclubAddress, tokenAddress
   // TODO do we need this? should it work in browser really?
+
   if (inBrowser) {
     // Initialize using injected web3 (Metamask)
     // To assemble web version run `npm run browserify`
@@ -473,9 +474,12 @@ async function init({ rpc, noteNetId, currency }) {
     ETH_AMOUNT = configsJson.eth_amount
     GENESIS_BLOCK = configsJson.genesis_block
     senderAccount = (await web3.eth.getAccounts())[0]
+    nftAddress = configsJson.nft_address
+    flexclubAddress = configsJson.flexclub_address
   } else {
     // Initialize from local node
     web3 = new Web3(rpc, null, { transactionConfirmationBlocks: 1 })
+    netId = await web3.eth.net.getId()
     GENESIS_BLOCK = 0
     contractJson = require(__dirname + '/../build/contracts/ETHFlexClub.json')
     contractNFTJson = require(__dirname + '/../build/contracts/FlexNFT.json')
@@ -493,20 +497,20 @@ async function init({ rpc, noteNetId, currency }) {
       console.log('Warning! PRIVATE_KEY not found. Please provide PRIVATE_KEY in .env file if you deposit')
     }
     erc20ContractJson = require(__dirname + '/../build/contracts/ERC20Mock.json')
-    // erc20flexclubJson = require(__dirname + '/../build/contracts/ERC20Tornado.json')
+    console.log(netId)
+    flexclubAddress = contractJson.networks[netId].address
+    nftAddress = contractNFTJson.networks[netId].address
   }
+  netId = await web3.eth.net.getId()
   // groth16 initialises a lot of Promises that will never be resolved, that's why we need to use process.exit to terminate the CLI
   groth16 = await buildGroth16()
-  netId = await web3.eth.net.getId()
+
   if (noteNetId && Number(noteNetId) !== netId) {
     throw new Error('This note is for a different network. Specify the --rpc option explicitly')
   }
   console.log('netId:', netId)
   isLocalRPC = netId > 42
 
-  flexclubAddress = /*currency === 'eth' ?*/ configsJson.flexclub_address// : erc20flexclubJson.networks[netId].address
-  tokenAddress = /*currency !== 'eth' ? erc20ContractJson.networks[netId].address :*/ null
-  nftAddress = configsJson.nft_address
   senderAccount = (await web3.eth.getAccounts())[0]
 
   flexclub = new web3.eth.Contract(contractJson.abi, flexclubAddress)
@@ -519,7 +523,7 @@ async function main() {
   if (inBrowser) {
     let instance = { currency: 'eth' }
     await init(instance)
-    instance = { currency: 'eth' , amount: ETH_AMOUNT }
+    instance = { currency: 'eth', amount: ETH_AMOUNT }
     window.connect = async () => {
       if (window.ethereum) {
         await window.ethereum.request({ method: 'eth_requestAccounts' })
@@ -641,7 +645,7 @@ async function main() {
         amount = '100'
         await init({ rpc: program.rpc, currency, amount })
         noteString = await deposit({ currency, amount })
-          ; (parsedNote = parseNote(noteString))
+        (parsedNote = parseNote(noteString))
         await withdraw({ deposit: parsedNote.deposit, currency, amount, recipient: senderAccount, refund: '0.02', relayerURL: program.relayer })
       })
     try {
