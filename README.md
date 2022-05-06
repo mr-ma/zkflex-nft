@@ -5,7 +5,7 @@ This is a decentralized application that allows users to mint wealth-flex NFTs w
 zkDAO
 
 ## Overview
-This application will allow anyone to mint an NFT corresponding to their wealth after undergoing zero knowledge verifications. Users start by submitting their funds in ETH to a mixer. They get credits to mint wealth-flex NFTs expensable if and only if zero knowledge proofs are presented. Each deposit will have a unique external nullifier and the user will only be able to expend once per each external nullifier. The deposited funds can be withdrawn after a fixed wait period (to prevent flash loans).
+AnonyFlex enables users to flex their wealth with privacy. Users deposit 100 ETH (ONE) into the mixer in exchange of which they get a credit note (secret note) to mint wealth-flex NFTs. Any wallet presenting a valid credit note will be able to mint a flex NFT club token (FNC). FNC tokens are non transferable making deposits to the mixer a must for users. User balances are redeemable almost immediately (after 2 blocks) after deposit.
 
 ## Use Cases
 This application will serve as a DAO tool to allow decentralized organizations to authenticate users based upon their net worth without violating their privacy. According to the Messari Report, DAO tooling is an existential need right now across crypto communities and privacy has always been a major concern in the blockchain space. A major problem when joining blockchain communities is privacy. On the one hand, it is important for a community to know the newcomers' merits. On the other hand, it is important for new members to be able to protect their privacy. The problem here is how can a new member prove their merits without revealing their identity.
