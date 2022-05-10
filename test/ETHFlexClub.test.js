@@ -3,39 +3,59 @@ require('chai').use(require('bn-chai')(web3.utils.BN)).use(require('chai-as-prom
 var expect = require('chai').expect
 const fs = require('fs')
 
-const { toBN, randomHex } = require('web3-utils')
+const { toBN, randomHex, hexToBytes, bytesToHex } = require('web3-utils')
 const { takeSnapshot, revertSnapshot, mineBlock } = require('../scripts/ganacheHelper')
+const bigintConversion = require('bigint-conversion')
 
 const FlexClub = artifacts.require('./ETHFlexClub.sol')
 const FlexNFT = artifacts.require('./FlexNFT.sol')
-
+const buildCalculator = require('../build/circuits/withdraw_js/witness_calculator')
 const { ETH_AMOUNT, MERKLE_TREE_HEIGHT, Minimum_Wait_Blocks } = process.env
 
-const websnarkUtils = require('websnark/src/utils')
-const buildGroth16 = require('websnark/src/groth16')
-const stringifyBigInts = require('websnark/tools/stringifybigint').stringifyBigInts
-const unstringifyBigInts2 = require('snarkjs/src/stringifybigint').unstringifyBigInts
-const snarkjs = require('snarkjs')
-const bigInt = snarkjs.bigInt
-const crypto = require('crypto')
-const circomlib = require('circomlib')
-const MerkleTree = require('fixed-merkle-tree')
+let calculator, wasm, zkey
 
-const rbigint = (nbytes) => snarkjs.bigInt.leBuff2int(crypto.randomBytes(nbytes))
-const pedersenHash = (data) => circomlib.babyJub.unpackPoint(circomlib.pedersenHash.hash(data))[0]
+// const websnarkUtils = require('websnark/src/utils')
+// const buildGroth16 = require('websnark/src/groth16')
+// const stringifyBigInts = require('websnark/tools/stringifybigint').stringifyBigInts
+// const unstringifyBigInts2 = require('snarkjs/src/stringifybigint').unstringifyBigInts
+const snarkjs = require('snarkjs')
+const bigInt = BigInt
+const crypto = require('crypto')
+// const circomlib = require('circomlib')
+const MerkleTree = require('fixed-merkle-tree')
+const { buildBabyjub, buildPedersenHash } = require('circomlibjs')
+const { stringifyBigInts,unstringifyBigInts } = require('websnark/tools/stringifybigint')
+const rbigint = (nbytes) => BigInt(randomHex(nbytes),16)
+let pedersenHash, babyJub
 const toFixedHex = (number, length = 32) =>
   '0x' +
-  bigInt(number)
+  BigInt(number)
     .toString(16)
     .padStart(length * 2, '0')
 const getRandomRecipient = () => rbigint(20)
+
+function bnToHex(bn) {
+  var hex = bn.toString(16)
+  if (hex.length % 2) {
+    hex = '0' + hex
+  }
+
+  if (0x80 & parseInt(hex.slice(0, 2), 16)) {
+    hex = '00' + hex
+  }
+
+  return hex
+}
 
 function generateDeposit() {
   let deposit = {
     secret: rbigint(31),
     nullifier: rbigint(31),
   }
-  const preimage = Buffer.concat([deposit.nullifier.leInt2Buff(31), deposit.secret.leInt2Buff(31)])
+  const preimage = Buffer.concat([
+    bigintConversion.bigintToBuf(deposit.nullifier),
+    bigintConversion.bigintToBuf(deposit.secret),
+  ])
   deposit.commitment = pedersenHash(preimage)
   return deposit
 }
@@ -49,10 +69,21 @@ function BNArrayToStringArray(array) {
   return arrayToPrint
 }
 
+async function generateProof(input) {
+  console.log(input)
+  const wtns = await calculator.calculateWTNSBin(input, 0)
+  const { proof } = await snarkjs.groth16.prove(zkey, wtns)
+  return {
+    a: [proof.pi_a[0], proof.pi_a[1]],
+    b: [proof.pi_b[0].reverse(), proof.pi_b[1].reverse()],
+    c: [proof.pi_c[0], proof.pi_c[1]],
+  }
+}
+
 function snarkVerify(proof) {
-  proof = unstringifyBigInts2(proof)
-  const verification_key = unstringifyBigInts2(require('../build/circuits/withdraw_verification_key.json'))
-  return snarkjs['groth'].isValid(verification_key, proof, proof.publicSignals)
+  // proof = unstringifyBigInts2(proof)
+  // const verification_key = unstringifyBigInts2(require('../build/circuits/withdraw_verification_key.json'))
+  return snarkjs.groth16.verify(zkey, proof, proof.publicSignals)
 }
 
 contract('ETHFlexClub', (accounts) => {
@@ -63,23 +94,29 @@ contract('ETHFlexClub', (accounts) => {
   const value = ETH_AMOUNT || '1000000000000000000' // 1 ether
   let snapshotId
   let tree
-  const fee = bigInt(ETH_AMOUNT).shr(1) || bigInt(1e17)
-  const refund = bigInt(0)
+  const fee = 1e17 //BigInt(ETH_AMOUNT).shr(1) || bigInt(1e17)
+  const refund = 1e17 //bigInt(0)
   const recipient = getRandomRecipient()
   const relayer = accounts[1]
   let groth16
   let circuit
   let proving_key
 
+
   before(async () => {
     tree = new MerkleTree(levels)
-    flexclub = await FlexClub.deployed()
-    flexnft = await FlexNFT.deployed()
-    // await flexnft.initialize(flexclub.address)
+    // flexclub = await FlexClub.deployed()
+    // flexnft = await FlexNFT.deployed()
     snapshotId = await takeSnapshot()
-    groth16 = await buildGroth16()
-    circuit = require('../build/circuits/withdraw.json')
-    proving_key = fs.readFileSync('build/circuits/withdraw_proving_key.bin').buffer
+    // groth16 = await buildGroth16()
+    // circuit = require('../build/circuits/withdraw.json')
+    // proving_key = fs.readFileSync('build/circuits/withdraw_proving_key.bin').buffer
+    wasm = fs.readFileSync('build/circuits/withdraw_js/withdraw.wasm')
+    zkey = fs.readFileSync('build/circuits/zkeys/withdraw.zkey')
+    calculator = await buildCalculator(wasm)
+    babyJub = await buildBabyjub()
+    const builderHash = await buildPedersenHash()
+    pedersenHash = (data) => bigintConversion.bufToBigint(babyJub.unpackPoint(builderHash.hash(data))[0])
   })
 
   describe('#constructor', () => {
@@ -97,38 +134,45 @@ contract('ETHFlexClub', (accounts) => {
 
   describe('#deposit', () => {
     it('should emit event', async () => {
-      let commitment = toFixedHex(42)
-      let { logs } = await flexclub.deposit(commitment, { value, from: sender })
-
+      let commitment = toFixedHex(42) //BNArrayToStringArray(hexToBytes(toFixedHex(42)))
+      console.log(commitment)
+      let { logs } = await flexclub.deposit(commitment, {
+        value,
+        from: sender,
+      })
+      console.log(logs)
       logs[0].event.should.be.equal('Deposit')
       logs[0].args.commitment.should.be.equal(commitment)
       logs[0].args.leafIndex.should.be.eq.BN(0)
 
-      commitment = toFixedHex(12)
-        ; ({ logs } = await flexclub.deposit(commitment, { value, from: accounts[2] }))
-
-      logs[0].event.should.be.equal('Deposit')
-      logs[0].args.commitment.should.be.equal(commitment)
-      logs[0].args.leafIndex.should.be.eq.BN(1)
+      // commitment = toFixedHex(12)(
+      //   ({ logs } = await flexclub.deposit(commitment, { value, from: accounts[2] })),
+      // )
+      // console.log(logs)
+      // logs[0].event.should.be.equal('Deposit')
+      // logs[0].args.commitment.should.be.equal(commitment)
+      // logs[0].args.leafIndex.should.be.eq.BN(1)
     })
 
-    it('should throw if there is a such commitment', async () => {
-      const commitment = toFixedHex(42)
-      await flexclub.deposit(commitment, { value, from: sender }).should.be.fulfilled
-      const error = await flexclub.deposit(commitment, { value, from: sender }).should.be.rejected
-      error.reason.should.be.equal('The commitment has been submitted')
-    })
+    // it('should throw if there is a such commitment', async () => {
+    //   const commitment = toFixedHex(42)
+    //   await flexclub.deposit(commitment, { value, from: sender }).should.be.fulfilled
+    //   const error = await flexclub.deposit(commitment, { value, from: sender }).should.be.rejected
+    //   error.reason.should.be.equal('The commitment has been submitted')
+    // })
   })
 
   describe('snark proof verification on js side', () => {
-    it('should detect tampering', async () => {
+    it.only('should detect tampering', async () => {
       const deposit = generateDeposit()
+      console.log(deposit)
       tree.insert(deposit.commitment)
       const { pathElements, pathIndices } = tree.path(0)
 
       const input = stringifyBigInts({
-        root: tree.root(),
-        nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+        // const input = {
+        root: tree.root,
+        nullifierHash: pedersenHash(bigintConversion.bigintToBuf(deposit.nullifier)),
         nullifier: deposit.nullifier,
         relayer: operator,
         recipient,
@@ -139,7 +183,8 @@ contract('ETHFlexClub', (accounts) => {
         pathIndices: pathIndices,
       })
 
-      let proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+      // let proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+      let proofData = await generateProof(input)
       const originalProof = JSON.parse(JSON.stringify(proofData))
       let result = snarkVerify(proofData)
       result.should.be.equal(true)
@@ -165,392 +210,393 @@ contract('ETHFlexClub', (accounts) => {
     })
   })
 
-  describe('#mint', () => {
-    it('should work', async () => {
-      const deposit = generateDeposit()
-      const user = accounts[4]
-      tree.insert(deposit.commitment)
+  // describe.only('#mint', () => {
+  //   it.only('should work', async () => {
+  //     const deposit = generateDeposit()
+  //     const user = accounts[4]
+  //     tree.insert(deposit.commitment)
 
-      const balanceUserBefore = await web3.eth.getBalance(user)
+  //     const balanceUserBefore = await web3.eth.getBalance(user)
 
-      // Uncomment to measure gas usage
-      // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
-      // console.log('deposit gas:', gas)
-      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
+  //     // Uncomment to measure gas usage
+  //     // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
+  //     // console.log('deposit gas:', gas)
+  //     await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
 
-      const balanceUserAfter = await web3.eth.getBalance(user)
-      balanceUserAfter.should.be.eq.BN(toBN(balanceUserBefore).sub(toBN(value)))
+  //     const balanceUserAfter = await web3.eth.getBalance(user)
+  //     balanceUserAfter.should.be.eq.BN(toBN(balanceUserBefore).sub(toBN(value)))
 
-      const { pathElements, pathIndices } = tree.path(0)
+  //     const { pathElements, pathIndices } = tree.path(0)
 
-      // Circuit input
-      const input = stringifyBigInts({
-        // public
-        root: tree.root(),
-        nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
-        relayer: operator,
-        recipient,
-        fee,
-        refund,
+  //     // Circuit input
+  //     const input = stringifyBigInts({
+  //       // public
+  //       root: tree.root(),
+  //       nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+  //       relayer: operator,
+  //       recipient,
+  //       fee,
+  //       refund,
 
-        // private
-        nullifier: deposit.nullifier,
-        secret: deposit.secret,
-        pathElements: pathElements,
-        pathIndices: pathIndices,
-      })
+  //       // private
+  //       nullifier: deposit.nullifier,
+  //       secret: deposit.secret,
+  //       pathElements: pathElements,
+  //       pathIndices: pathIndices,
+  //     })
 
-      const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-      const { proof } = websnarkUtils.toSolidityInput(proofData)
+  //     // const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  //     let proofData = await generateProof(input)
+  //     const { proof } = websnarkUtils.toSolidityInput(proofData)
 
-      const balanceFlexClubBefore = await web3.eth.getBalance(flexclub.address)
-      const balanceRelayerBefore = await web3.eth.getBalance(relayer)
-      const balanceOperatorBefore = await web3.eth.getBalance(operator)
-      const balanceReceiverBefore = await web3.eth.getBalance(toFixedHex(recipient, 20))
+  //     const balanceFlexClubBefore = await web3.eth.getBalance(flexclub.address)
+  //     const balanceRelayerBefore = await web3.eth.getBalance(relayer)
+  //     const balanceOperatorBefore = await web3.eth.getBalance(operator)
+  //     const balanceReceiverBefore = await web3.eth.getBalance(toFixedHex(recipient, 20))
 
-      const balanceNFTReceiverBefore = await flexnft.balanceOf(toFixedHex(recipient, 20))
+  //     const balanceNFTReceiverBefore = await flexnft.balanceOf(toFixedHex(recipient, 20))
 
-      let isSpent = await flexclub.isSpent(toFixedHex(input.nullifierHash))
-      isSpent.should.be.equal(false)
+  //     let isSpent = await flexclub.isSpent(toFixedHex(input.nullifierHash))
+  //     isSpent.should.be.equal(false)
 
-      // Uncomment to measure gas usage
-      // gas = await flexclub.withdraw.estimateGas(proof, publicSignals, { from: relayer, gasPrice: '0' })
-      // console.log('withdraw gas:', gas)
-      const args = [
-        toFixedHex(input.root),
-        toFixedHex(input.nullifierHash),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      const { logs } = await flexclub.mintNFT(proof, ...args, { from: relayer, gasPrice: '0' })
+  //     // Uncomment to measure gas usage
+  //     // gas = await flexclub.withdraw.estimateGas(proof, publicSignals, { from: relayer, gasPrice: '0' })
+  //     // console.log('withdraw gas:', gas)
+  //     const args = [
+  //       toFixedHex(input.root),
+  //       toFixedHex(input.nullifierHash),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     const { logs } = await flexclub.mintNFT(proof, ...args, { from: relayer, gasPrice: '0' })
 
-      const balanceFlexClubAfter = await web3.eth.getBalance(flexclub.address)
-      const balanceRelayerAfter = await web3.eth.getBalance(relayer)
-      const balanceOperatorAfter = await web3.eth.getBalance(operator)
-      const balanceReceiverAfter = await web3.eth.getBalance(toFixedHex(recipient, 20))
-      const balanceNFTReceiverAfter = await flexnft.balanceOf(toFixedHex(recipient, 20))
+  //     const balanceFlexClubAfter = await web3.eth.getBalance(flexclub.address)
+  //     const balanceRelayerAfter = await web3.eth.getBalance(relayer)
+  //     const balanceOperatorAfter = await web3.eth.getBalance(operator)
+  //     const balanceReceiverAfter = await web3.eth.getBalance(toFixedHex(recipient, 20))
+  //     const balanceNFTReceiverAfter = await flexnft.balanceOf(toFixedHex(recipient, 20))
 
-      const feeBN = toBN(fee.toString())
-      balanceFlexClubAfter.should.be.eq.BN(toBN(balanceFlexClubBefore)) //.sub(toBN(value)))
-      balanceRelayerAfter.should.be.eq.BN(toBN(balanceRelayerBefore))
-      balanceOperatorAfter.should.be.eq.BN(toBN(balanceOperatorBefore)) //.add(feeBN))
-      balanceReceiverAfter.should.be.eq.BN(toBN(balanceReceiverBefore)) //.add(toBN(value)).sub(feeBN))
+  //     const feeBN = toBN(fee.toString())
+  //     balanceFlexClubAfter.should.be.eq.BN(toBN(balanceFlexClubBefore)) //.sub(toBN(value)))
+  //     balanceRelayerAfter.should.be.eq.BN(toBN(balanceRelayerBefore))
+  //     balanceOperatorAfter.should.be.eq.BN(toBN(balanceOperatorBefore)) //.add(feeBN))
+  //     balanceReceiverAfter.should.be.eq.BN(toBN(balanceReceiverBefore)) //.add(toBN(value)).sub(feeBN))
 
-      //assert if receiver got one NFT token
-      balanceNFTReceiverAfter.should.be.eq.BN(toBN(balanceNFTReceiverBefore).add(toBN('1')))
+  //     //assert if receiver got one NFT token
+  //     balanceNFTReceiverAfter.should.be.eq.BN(toBN(balanceNFTReceiverBefore).add(toBN('1')))
 
-      logs[0].event.should.be.equal('NFTMint')
-      logs[0].args.nullifierHash.should.be.equal(toFixedHex(input.nullifierHash))
-      logs[0].args.relayer.should.be.eq.BN(operator)
-      logs[0].args.fee.should.be.eq.BN(feeBN)
-      isSpent = await flexclub.isSpent(toFixedHex(input.nullifierHash))
-      isSpent.should.be.equal(true)
-    })
+  //     logs[0].event.should.be.equal('NFTMint')
+  //     logs[0].args.nullifierHash.should.be.equal(toFixedHex(input.nullifierHash))
+  //     logs[0].args.relayer.should.be.eq.BN(operator)
+  //     logs[0].args.fee.should.be.eq.BN(feeBN)
+  //     isSpent = await flexclub.isSpent(toFixedHex(input.nullifierHash))
+  //     isSpent.should.be.equal(true)
+  //   })
 
-    it('should prevent double spend', async () => {
-      const deposit = generateDeposit()
-      tree.insert(deposit.commitment)
-      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+  //   it('should prevent double spend', async () => {
+  //     const deposit = generateDeposit()
+  //     tree.insert(deposit.commitment)
+  //     await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
-      const { pathElements, pathIndices } = tree.path(0)
+  //     const { pathElements, pathIndices } = tree.path(0)
 
-      const input = stringifyBigInts({
-        root: tree.root(),
-        nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
-        nullifier: deposit.nullifier,
-        relayer: operator,
-        recipient,
-        fee,
-        refund,
-        secret: deposit.secret,
-        pathElements: pathElements,
-        pathIndices: pathIndices,
-      })
-      const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-      const { proof } = websnarkUtils.toSolidityInput(proofData)
-      const args = [
-        toFixedHex(input.root),
-        toFixedHex(input.nullifierHash),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.fulfilled
-      const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
-      error.reason.should.be.equal('The note has been already spent')
-    })
+  //     const input = stringifyBigInts({
+  //       root: tree.root(),
+  //       nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+  //       nullifier: deposit.nullifier,
+  //       relayer: operator,
+  //       recipient,
+  //       fee,
+  //       refund,
+  //       secret: deposit.secret,
+  //       pathElements: pathElements,
+  //       pathIndices: pathIndices,
+  //     })
+  //     const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  //     const { proof } = websnarkUtils.toSolidityInput(proofData)
+  //     const args = [
+  //       toFixedHex(input.root),
+  //       toFixedHex(input.nullifierHash),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.fulfilled
+  //     const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
+  //     error.reason.should.be.equal('The note has been already spent')
+  //   })
 
-    it('should prevent double spend with overflow', async () => {
-      const deposit = generateDeposit()
-      tree.insert(deposit.commitment)
-      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+  //   it('should prevent double spend with overflow', async () => {
+  //     const deposit = generateDeposit()
+  //     tree.insert(deposit.commitment)
+  //     await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
-      const { pathElements, pathIndices } = tree.path(0)
+  //     const { pathElements, pathIndices } = tree.path(0)
 
-      const input = stringifyBigInts({
-        root: tree.root(),
-        nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
-        nullifier: deposit.nullifier,
-        relayer: operator,
-        recipient,
-        fee,
-        refund,
-        secret: deposit.secret,
-        pathElements: pathElements,
-        pathIndices: pathIndices,
-      })
-      const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-      const { proof } = websnarkUtils.toSolidityInput(proofData)
-      const args = [
-        toFixedHex(input.root),
-        toFixedHex(
-          toBN(input.nullifierHash).add(
-            toBN('21888242871839275222246405745257275088548364400416034343698204186575808495617'),
-          ),
-        ),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
-      error.reason.should.be.equal('verifier-gte-snark-scalar-field')
-    })
+  //     const input = stringifyBigInts({
+  //       root: tree.root(),
+  //       nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+  //       nullifier: deposit.nullifier,
+  //       relayer: operator,
+  //       recipient,
+  //       fee,
+  //       refund,
+  //       secret: deposit.secret,
+  //       pathElements: pathElements,
+  //       pathIndices: pathIndices,
+  //     })
+  //     const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  //     const { proof } = websnarkUtils.toSolidityInput(proofData)
+  //     const args = [
+  //       toFixedHex(input.root),
+  //       toFixedHex(
+  //         toBN(input.nullifierHash).add(
+  //           toBN('21888242871839275222246405745257275088548364400416034343698204186575808495617'),
+  //         ),
+  //       ),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
+  //     error.reason.should.be.equal('verifier-gte-snark-scalar-field')
+  //   })
 
-    // it('fee should be less or equal transfer value', async () => {
-    //   const deposit = generateDeposit()
-    //   tree.insert(deposit.commitment)
-    //   await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+  //   // it('fee should be less or equal transfer value', async () => {
+  //   //   const deposit = generateDeposit()
+  //   //   tree.insert(deposit.commitment)
+  //   //   await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
-    //   const { pathElements, pathIndices } = tree.path(0)
-    //   const largeFee = bigInt(value).add(bigInt(1))
-    //   const input = stringifyBigInts({
-    //     root: tree.root(),
-    //     nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
-    //     nullifier: deposit.nullifier,
-    //     relayer: operator,
-    //     recipient,
-    //     fee: largeFee,
-    //     refund,
-    //     secret: deposit.secret,
-    //     pathElements: pathElements,
-    //     pathIndices: pathIndices,
-    //   })
+  //   //   const { pathElements, pathIndices } = tree.path(0)
+  //   //   const largeFee = bigInt(value).add(bigInt(1))
+  //   //   const input = stringifyBigInts({
+  //   //     root: tree.root(),
+  //   //     nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+  //   //     nullifier: deposit.nullifier,
+  //   //     relayer: operator,
+  //   //     recipient,
+  //   //     fee: largeFee,
+  //   //     refund,
+  //   //     secret: deposit.secret,
+  //   //     pathElements: pathElements,
+  //   //     pathIndices: pathIndices,
+  //   //   })
 
-    //   const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-    //   const { proof } = websnarkUtils.toSolidityInput(proofData)
-    //   const args = [
-    //     toFixedHex(input.root),
-    //     toFixedHex(input.nullifierHash),
-    //     toFixedHex(input.recipient, 20),
-    //     toFixedHex(input.relayer, 20),
-    //     toFixedHex(input.fee),
-    //     toFixedHex(input.refund),
-    //   ]
-    //   const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
-    //   error.reason.should.be.equal('Fee exceeds transfer value')
-    // })
+  //   //   const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  //   //   const { proof } = websnarkUtils.toSolidityInput(proofData)
+  //   //   const args = [
+  //   //     toFixedHex(input.root),
+  //   //     toFixedHex(input.nullifierHash),
+  //   //     toFixedHex(input.recipient, 20),
+  //   //     toFixedHex(input.relayer, 20),
+  //   //     toFixedHex(input.fee),
+  //   //     toFixedHex(input.refund),
+  //   //   ]
+  //   //   const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
+  //   //   error.reason.should.be.equal('Fee exceeds transfer value')
+  //   // })
 
-    it('should throw for corrupted merkle tree root', async () => {
-      const deposit = generateDeposit()
-      tree.insert(deposit.commitment)
-      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+  //   it('should throw for corrupted merkle tree root', async () => {
+  //     const deposit = generateDeposit()
+  //     tree.insert(deposit.commitment)
+  //     await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
-      const { pathElements, pathIndices } = tree.path(0)
+  //     const { pathElements, pathIndices } = tree.path(0)
 
-      const input = stringifyBigInts({
-        nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
-        root: tree.root(),
-        nullifier: deposit.nullifier,
-        relayer: operator,
-        recipient,
-        fee,
-        refund,
-        secret: deposit.secret,
-        pathElements: pathElements,
-        pathIndices: pathIndices,
-      })
+  //     const input = stringifyBigInts({
+  //       nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+  //       root: tree.root(),
+  //       nullifier: deposit.nullifier,
+  //       relayer: operator,
+  //       recipient,
+  //       fee,
+  //       refund,
+  //       secret: deposit.secret,
+  //       pathElements: pathElements,
+  //       pathIndices: pathIndices,
+  //     })
 
-      const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-      const { proof } = websnarkUtils.toSolidityInput(proofData)
+  //     const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  //     const { proof } = websnarkUtils.toSolidityInput(proofData)
 
-      const args = [
-        toFixedHex(randomHex(32)),
-        toFixedHex(input.nullifierHash),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
-      error.reason.should.be.equal('Cannot find your merkle root')
-    })
+  //     const args = [
+  //       toFixedHex(randomHex(32)),
+  //       toFixedHex(input.nullifierHash),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     const error = await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
+  //     error.reason.should.be.equal('Cannot find your merkle root')
+  //   })
 
-    it('should reject with tampered public inputs', async () => {
-      const deposit = generateDeposit()
-      tree.insert(deposit.commitment)
-      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+  //   it('should reject with tampered public inputs', async () => {
+  //     const deposit = generateDeposit()
+  //     tree.insert(deposit.commitment)
+  //     await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
-      let { pathElements, pathIndices } = tree.path(0)
+  //     let { pathElements, pathIndices } = tree.path(0)
 
-      const input = stringifyBigInts({
-        root: tree.root(),
-        nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
-        nullifier: deposit.nullifier,
-        relayer: operator,
-        recipient,
-        fee,
-        refund,
-        secret: deposit.secret,
-        pathElements: pathElements,
-        pathIndices: pathIndices,
-      })
-      const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-      let { proof } = websnarkUtils.toSolidityInput(proofData)
-      const args = [
-        toFixedHex(input.root),
-        toFixedHex(input.nullifierHash),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      let incorrectArgs
-      const originalProof = proof.slice()
+  //     const input = stringifyBigInts({
+  //       root: tree.root(),
+  //       nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+  //       nullifier: deposit.nullifier,
+  //       relayer: operator,
+  //       recipient,
+  //       fee,
+  //       refund,
+  //       secret: deposit.secret,
+  //       pathElements: pathElements,
+  //       pathIndices: pathIndices,
+  //     })
+  //     const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  //     let { proof } = websnarkUtils.toSolidityInput(proofData)
+  //     const args = [
+  //       toFixedHex(input.root),
+  //       toFixedHex(input.nullifierHash),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     let incorrectArgs
+  //     const originalProof = proof.slice()
 
-      // recipient
-      incorrectArgs = [
-        toFixedHex(input.root),
-        toFixedHex(input.nullifierHash),
-        toFixedHex('0x0000000000000000000000007a1f9131357404ef86d7c38dbffed2da70321337', 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      let error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
-      error.reason.should.be.equal('Invalid withdraw proof')
+  //     // recipient
+  //     incorrectArgs = [
+  //       toFixedHex(input.root),
+  //       toFixedHex(input.nullifierHash),
+  //       toFixedHex('0x0000000000000000000000007a1f9131357404ef86d7c38dbffed2da70321337', 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     let error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
+  //     error.reason.should.be.equal('Invalid withdraw proof')
 
-      // fee
-      incorrectArgs = [
-        toFixedHex(input.root),
-        toFixedHex(input.nullifierHash),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex('0x000000000000000000000000000000000000000000000000015345785d8a0000'),
-        toFixedHex(input.refund),
-      ]
-      error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
-      error.reason.should.be.equal('Invalid withdraw proof')
+  //     // fee
+  //     incorrectArgs = [
+  //       toFixedHex(input.root),
+  //       toFixedHex(input.nullifierHash),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex('0x000000000000000000000000000000000000000000000000015345785d8a0000'),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
+  //     error.reason.should.be.equal('Invalid withdraw proof')
 
-      // nullifier
-      incorrectArgs = [
-        toFixedHex(input.root),
-        toFixedHex('0x00abdfc78211f8807b9c6504a6e537e71b8788b2f529a95f1399ce124a8642ad'),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
-      error.reason.should.be.equal('Invalid withdraw proof')
+  //     // nullifier
+  //     incorrectArgs = [
+  //       toFixedHex(input.root),
+  //       toFixedHex('0x00abdfc78211f8807b9c6504a6e537e71b8788b2f529a95f1399ce124a8642ad'),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     error = await flexclub.mintNFT(proof, ...incorrectArgs, { from: relayer }).should.be.rejected
+  //     error.reason.should.be.equal('Invalid withdraw proof')
 
-      // proof itself
-      proof = '0xbeef' + proof.substr(6)
-      await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
+  //     // proof itself
+  //     proof = '0xbeef' + proof.substr(6)
+  //     await flexclub.mintNFT(proof, ...args, { from: relayer }).should.be.rejected
 
-      // should work with original values
-      await flexclub.mintNFT(originalProof, ...args, { from: relayer }).should.be.fulfilled
-    })
+  //     // should work with original values
+  //     await flexclub.mintNFT(originalProof, ...args, { from: relayer }).should.be.fulfilled
+  //   })
 
-    it('should reject with non zero refund', async () => {
-      const deposit = generateDeposit()
-      tree.insert(deposit.commitment)
-      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
+  //   it('should reject with non zero refund', async () => {
+  //     const deposit = generateDeposit()
+  //     tree.insert(deposit.commitment)
+  //     await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: sender })
 
-      const { pathElements, pathIndices } = tree.path(0)
+  //     const { pathElements, pathIndices } = tree.path(0)
 
-      const input = stringifyBigInts({
-        nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
-        root: tree.root(),
-        nullifier: deposit.nullifier,
-        relayer: operator,
-        recipient,
-        fee,
-        refund: bigInt(1),
-        secret: deposit.secret,
-        pathElements: pathElements,
-        pathIndices: pathIndices,
-      })
+  //     const input = stringifyBigInts({
+  //       nullifierHash: pedersenHash(deposit.nullifier.leInt2Buff(31)),
+  //       root: tree.root(),
+  //       nullifier: deposit.nullifier,
+  //       relayer: operator,
+  //       recipient,
+  //       fee,
+  //       refund: bigInt(1),
+  //       secret: deposit.secret,
+  //       pathElements: pathElements,
+  //       pathIndices: pathIndices,
+  //     })
 
-      const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-      const { proof } = websnarkUtils.toSolidityInput(proofData)
+  //     const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  //     const { proof } = websnarkUtils.toSolidityInput(proofData)
 
-      const args = [
-        toFixedHex(input.root),
-        toFixedHex(input.nullifierHash),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
-      const error = await flexclub.mintNFT(proof, ...args, { value, from: relayer }).should.be.rejected
-      error.reason.should.be.equal('Message value is supposed to be zero for ETH instance')
-    })
-  })
+  //     const args = [
+  //       toFixedHex(input.root),
+  //       toFixedHex(input.nullifierHash),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
+  //     const error = await flexclub.mintNFT(proof, ...args, { value, from: relayer }).should.be.rejected
+  //     error.reason.should.be.equal('Message value is supposed to be zero for ETH instance')
+  //   })
+  // })
 
-  describe('#withdraw balance', () => {
-    it('should work', async () => {
-      const deposit = generateDeposit()
-      const user = accounts[4]
-      tree.insert(deposit.commitment)
+  // describe('#withdraw balance', () => {
+  //   it('should work', async () => {
+  //     const deposit = generateDeposit()
+  //     const user = accounts[4]
+  //     tree.insert(deposit.commitment)
 
-      const balanceUserBefore = await web3.eth.getBalance(user)
+  //     const balanceUserBefore = await web3.eth.getBalance(user)
 
-      // Uncomment to measure gas usage
-      // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
-      // console.log('deposit gas:', gas)
-      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
+  //     // Uncomment to measure gas usage
+  //     // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
+  //     // console.log('deposit gas:', gas)
+  //     await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
 
-      const balanceUserAfter = await web3.eth.getBalance(user)
-      balanceUserAfter.should.be.eq.BN(toBN(balanceUserBefore).sub(toBN(value)))
+  //     const balanceUserAfter = await web3.eth.getBalance(user)
+  //     balanceUserAfter.should.be.eq.BN(toBN(balanceUserBefore).sub(toBN(value)))
 
-      const balanceFlexClubBefore = await web3.eth.getBalance(flexclub.address)
+  //     const balanceFlexClubBefore = await web3.eth.getBalance(flexclub.address)
 
-      //mine the required number of blocks
-      for (let index = 0; index < Minimum_Wait_Blocks; index++) {
-        await mineBlock()
-      }
+  //     //mine the required number of blocks
+  //     for (let index = 0; index < Minimum_Wait_Blocks; index++) {
+  //       await mineBlock()
+  //     }
 
-      const { logs } = await flexclub.withdraw({ from: user, gasPrice: '0' })
+  //     const { logs } = await flexclub.withdraw({ from: user, gasPrice: '0' })
 
-      const balanceFlexClubAfter = await web3.eth.getBalance(flexclub.address)
-      const balanceUserAfterWithdraw = await web3.eth.getBalance(user)
+  //     const balanceFlexClubAfter = await web3.eth.getBalance(flexclub.address)
+  //     const balanceUserAfterWithdraw = await web3.eth.getBalance(user)
 
-      balanceFlexClubAfter.should.be.eq.BN(toBN(balanceFlexClubBefore).sub(toBN(value)))
-      balanceUserAfterWithdraw.should.be.eq.BN(toBN(balanceUserBefore)) //.add(toBN(value)).sub(feeBN))
+  //     balanceFlexClubAfter.should.be.eq.BN(toBN(balanceFlexClubBefore).sub(toBN(value)))
+  //     balanceUserAfterWithdraw.should.be.eq.BN(toBN(balanceUserBefore)) //.add(toBN(value)).sub(feeBN))
 
-      logs[0].event.should.be.equal('Withdrawal')
-    })
-    it('should reject with min wait blocks not met', async () => {
-      const deposit = generateDeposit()
-      const user = accounts[4]
-      tree.insert(deposit.commitment)
+  //     logs[0].event.should.be.equal('Withdrawal')
+  //   })
+  //   it('should reject with min wait blocks not met', async () => {
+  //     const deposit = generateDeposit()
+  //     const user = accounts[4]
+  //     tree.insert(deposit.commitment)
 
-      // Uncomment to measure gas usage
-      // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
-      // console.log('deposit gas:', gas)
-      await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
+  //     // Uncomment to measure gas usage
+  //     // let gas = await flexclub.deposit.estimateGas(toBN(deposit.commitment.toString()), { value, from: user, gasPrice: '0' })
+  //     // console.log('deposit gas:', gas)
+  //     await flexclub.deposit(toFixedHex(deposit.commitment), { value, from: user, gasPrice: '0' })
 
-      //mine the required number of blocks
-      // for (let index = 0; index < Minimum_Wait_Blocks; index++) {
-      //   await mineBlock()
-      // }
-      const error = await flexclub.withdraw({ from: user, gasPrice: '0' }).should.be.rejected
-      error.reason.should.be.equal('min wait blocks not met')
-    })
+  //     //mine the required number of blocks
+  //     // for (let index = 0; index < Minimum_Wait_Blocks; index++) {
+  //     //   await mineBlock()
+  //     // }
+  //     const error = await flexclub.withdraw({ from: user, gasPrice: '0' }).should.be.rejected
+  //     error.reason.should.be.equal('min wait blocks not met')
+  //   })
     // it('should work with multiple deposits', async () => {
     //   const deposit = generateDeposit()
     //   const user = accounts[4]
@@ -596,61 +642,61 @@ contract('ETHFlexClub', (accounts) => {
 
     //   logs[0].event.should.be.equal('Withdrawal')
     // })
-  })
+  // })
 
-  describe('#isSpent', () => {
-    it('should work', async () => {
-      const deposit1 = generateDeposit()
-      const deposit2 = generateDeposit()
-      tree.insert(deposit1.commitment)
-      tree.insert(deposit2.commitment)
-      await flexclub.deposit(toFixedHex(deposit1.commitment), { value, gasPrice: '0' })
-      await flexclub.deposit(toFixedHex(deposit2.commitment), { value, gasPrice: '0' })
+  // describe('#isSpent', () => {
+  //   it('should work', async () => {
+  //     const deposit1 = generateDeposit()
+  //     const deposit2 = generateDeposit()
+  //     tree.insert(deposit1.commitment)
+  //     tree.insert(deposit2.commitment)
+  //     await flexclub.deposit(toFixedHex(deposit1.commitment), { value, gasPrice: '0' })
+  //     await flexclub.deposit(toFixedHex(deposit2.commitment), { value, gasPrice: '0' })
 
-      const { pathElements, pathIndices } = tree.path(1)
+  //     const { pathElements, pathIndices } = tree.path(1)
 
-      // Circuit input
-      const input = stringifyBigInts({
-        // public
-        root: tree.root(),
-        nullifierHash: pedersenHash(deposit2.nullifier.leInt2Buff(31)),
-        relayer: operator,
-        recipient,
-        fee,
-        refund,
+  //     // Circuit input
+  //     const input = stringifyBigInts({
+  //       // public
+  //       root: tree.root(),
+  //       nullifierHash: pedersenHash(deposit2.nullifier.leInt2Buff(31)),
+  //       relayer: operator,
+  //       recipient,
+  //       fee,
+  //       refund,
 
-        // private
-        nullifier: deposit2.nullifier,
-        secret: deposit2.secret,
-        pathElements: pathElements,
-        pathIndices: pathIndices,
-      })
+  //       // private
+  //       nullifier: deposit2.nullifier,
+  //       secret: deposit2.secret,
+  //       pathElements: pathElements,
+  //       pathIndices: pathIndices,
+  //     })
 
-      const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
-      const { proof } = websnarkUtils.toSolidityInput(proofData)
+  //     const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  //     const { proof } = websnarkUtils.toSolidityInput(proofData)
 
-      const args = [
-        toFixedHex(input.root),
-        toFixedHex(input.nullifierHash),
-        toFixedHex(input.recipient, 20),
-        toFixedHex(input.relayer, 20),
-        toFixedHex(input.fee),
-        toFixedHex(input.refund),
-      ]
+  //     const args = [
+  //       toFixedHex(input.root),
+  //       toFixedHex(input.nullifierHash),
+  //       toFixedHex(input.recipient, 20),
+  //       toFixedHex(input.relayer, 20),
+  //       toFixedHex(input.fee),
+  //       toFixedHex(input.refund),
+  //     ]
 
-      await flexclub.mintNFT(proof, ...args, { from: relayer, gasPrice: '0' })
+  //     await flexclub.mintNFT(proof, ...args, { from: relayer, gasPrice: '0' })
 
-      const nullifierHash1 = toFixedHex(pedersenHash(deposit1.nullifier.leInt2Buff(31)))
-      const nullifierHash2 = toFixedHex(pedersenHash(deposit2.nullifier.leInt2Buff(31)))
-      const spentArray = await flexclub.isSpentArray([nullifierHash1, nullifierHash2])
-      spentArray.should.be.deep.equal([false, true])
-    })
-  })
+  //     const nullifierHash1 = toFixedHex(pedersenHash(deposit1.nullifier.leInt2Buff(31)))
+  //     const nullifierHash2 = toFixedHex(pedersenHash(deposit2.nullifier.leInt2Buff(31)))
+  //     const spentArray = await flexclub.isSpentArray([nullifierHash1, nullifierHash2])
+  //     spentArray.should.be.deep.equal([false, true])
+  //   })
+  // })
 
-  afterEach(async () => {
-    await revertSnapshot(snapshotId.result)
-    // eslint-disable-next-line require-atomic-updates
-    snapshotId = await takeSnapshot()
-    tree = new MerkleTree(levels)
-  })
+  // afterEach(async () => {
+  //   await revertSnapshot(snapshotId.result)
+  //   // eslint-disable-next-line require-atomic-updates
+  //   snapshotId = await takeSnapshot()
+  //   tree = new MerkleTree(levels)
+  // })
 })

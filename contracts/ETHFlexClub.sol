@@ -60,7 +60,9 @@ contract ETHFlexClub is FlexClub {
     }
 
     function _processWithdraw(address payable _recipient) canWithdraw(_recipient) internal override  {
-        (bool success, ) = _recipient.call{ value: _balances[_recipient] }("");
+        uint256 withdrawBalance = _balances[_recipient];
+        _balances[_recipient] = 0;
+        (bool success, ) = _recipient.call{ value: withdrawBalance }("");
         require(success, "payment to _recipient did not go thru");
     }
 

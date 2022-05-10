@@ -17,6 +17,7 @@ const websnarkUtils = require('websnark/src/utils')
 const { toWei, fromWei, toBN, BN } = require('web3-utils')
 const config = require('./config')
 const program = require('commander')
+const ZKPClient = require('circuits')
 
 let web3, flexclub, flexnft, nftAddress, circuit, proving_key, groth16, erc20, erc721, senderAccount, netId
 let MERKLE_TREE_HEIGHT, ETH_AMOUNT, PRIVATE_KEY, GENESIS_BLOCK
@@ -128,6 +129,10 @@ async function deposit({ currency, amount }) {
   return noteString
 }
 
+
+
+
+
 /**
  * Generate merkle tree for a deposit.
  * Download deposit events from the flexclub, reconstructs merkle tree, finds our deposit leaf
@@ -191,6 +196,55 @@ async function generateProof({ deposit, recipient, relayerAddress = 0, fee = 0, 
 
   console.log('Generating SNARK proof')
   console.time('Proof time')
+  const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
+  const { proof } = websnarkUtils.toSolidityInput(proofData)
+  console.timeEnd('Proof time')
+
+  const args = [
+    toHex(input.root),
+    toHex(input.nullifierHash),
+    toHex(input.recipient, 20),
+    toHex(input.relayer, 20),
+    toHex(input.fee),
+    toHex(input.refund),
+  ]
+
+  return { proof, args }
+}
+
+
+/**
+ * Generate SNARK proof for withdrawal
+ * @param deposit Deposit object
+ * @param recipient Funds recipient
+ * @param relayer Relayer address
+ * @param fee Relayer fee
+ * @param refund Receive ether for exchanged tokens
+ */
+async function generateProofNew({ deposit, recipient, relayerAddress = 0, fee = 0, refund = 0 }) {
+  // Compute merkle proof of our commitment
+  const { root, pathElements, pathIndices } = await generateMerkleProof(deposit)
+
+  // Prepare circuit input
+  const input = {
+    // Public snark inputs
+    root: root,
+    nullifierHash: deposit.nullifierHash,
+    recipient: bigInt(recipient),
+    relayer: bigInt(relayerAddress),
+    fee: bigInt(fee),
+    refund: bigInt(refund),
+
+    // Private snark inputs
+    nullifier: deposit.nullifier,
+    secret: deposit.secret,
+    pathElements: pathElements,
+    pathIndices: pathIndices,
+  }
+
+  console.log('Generating SNARK proof using circuit')
+  console.time('Proof time')
+  //ZKPClient().init(Buffer.from(WASMFile), Buffer.from())
   const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
   const { proof } = websnarkUtils.toSolidityInput(proofData)
   console.timeEnd('Proof time')

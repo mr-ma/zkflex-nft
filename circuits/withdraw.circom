@@ -1,3 +1,5 @@
+pragma circom 2.0.0;
+
 include "../node_modules/circomlib/circuits/bitify.circom";
 include "../node_modules/circomlib/circuits/pedersen.circom";
 include "merkleTree.circom";
@@ -29,14 +31,14 @@ template CommitmentHasher() {
 template Withdraw(levels) {
     signal input root;
     signal input nullifierHash;
-    signal input recipient; // not taking part in any computations
-    signal input relayer;  // not taking part in any computations
-    signal input fee;      // not taking part in any computations
-    signal input refund;   // not taking part in any computations
-    signal private input nullifier;
-    signal private input secret;
-    signal private input pathElements[levels];
-    signal private input pathIndices[levels];
+    // signal input recipient; // not taking part in any computations
+    // signal input relayer;  // not taking part in any computations
+    // signal input fee;      // not taking part in any computations
+    // signal input refund;   // not taking part in any computations
+    signal input nullifier; //private
+    signal input secret; //private
+    signal input pathElements[levels]; //private
+    signal input pathIndices[levels]; //private
 
     component hasher = CommitmentHasher();
     hasher.nullifier <== nullifier;
@@ -54,14 +56,14 @@ template Withdraw(levels) {
     // Add hidden signals to make sure that tampering with recipient or fee will invalidate the snark proof
     // Most likely it is not required, but it's better to stay on the safe side and it only takes 2 constraints
     // Squares are used to prevent optimizer from removing those constraints
-    signal recipientSquare;
-    signal feeSquare;
-    signal relayerSquare;
-    signal refundSquare;
-    recipientSquare <== recipient * recipient;
-    feeSquare <== fee * fee;
-    relayerSquare <== relayer * relayer;
-    refundSquare <== refund * refund;
+    // signal recipientSquare;
+    // signal feeSquare;
+    // signal relayerSquare;
+    // signal refundSquare;
+    // recipientSquare <== recipient * recipient;
+    // feeSquare <== fee * fee;
+    // relayerSquare <== relayer * relayer;
+    // refundSquare <== refund * refund;
 }
 
-component main = Withdraw(20);
+component main {public [root, nullifierHash/*, recipient, relayer, fee, refund*/]}= Withdraw(20);
