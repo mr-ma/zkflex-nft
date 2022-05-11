@@ -463,9 +463,19 @@ async function init({ rpc, noteNetId, currency }) {
       console.log('Not connected to metamask!!')
       return
     }
-
+    const chainId = web3.currentProvider.chainId
+    let chainname = ''
+    if (chainId === '0x6357d2e0'){
+      chainname = '-harmony-test'
+    }
+    else if(chainId === '0x63564c40') {
+      chainname = '-harmony-main'
+    } else {
+      alert('Set your metamask network to either of harmony testnet or harmony mainnet. Currently, no other networks are supported!')
+      return
+    }
     // web3 = new Web3(window.web3.currentProvider, null, { transactionConfirmationBlocks: 1 })
-    configsJson = await (await fetch('config.json')).json()
+    configsJson = await (await fetch('config'+chainname+'.json')).json()
     contractJson = await (await fetch('assets/json/ETHFlexClub.json')).json()
     contractNFTJson = await (await fetch('assets/json/FlexNFT.json')).json()
     circuit = await (await fetch('assets/json/withdraw.json')).json()
@@ -521,18 +531,18 @@ async function init({ rpc, noteNetId, currency }) {
 
 async function main() {
   if (inBrowser) {
-    let instance = { currency: 'eth' }
-    await init(instance)
-    instance = { currency: 'eth', amount: ETH_AMOUNT }
     window.connect = async () => {
       if (window.ethereum) {
         await window.ethereum.request({ method: 'eth_requestAccounts' })
         web3 = new Web3(window.ethereum)
       } else {
-        alert('Not able to connect to metamask!!')
+        alert('Not able to connect to metamask; refresh the page after installing metamask!!')
         return
       }
     }
+    let instance = { currency: 'eth' }
+    await init(instance)
+    instance = { currency: 'eth', amount: ETH_AMOUNT }
     window.deposit = async () => {
       await deposit(instance)
     }
