@@ -1,5 +1,5 @@
 require('dotenv').config()
-const { TruffleProvider } = require("@harmony-js/core")
+// const { TruffleProvider } = require("@harmony-js/core")
 
 const HDWalletProvider = require('@truffle/hdwallet-provider')
 const utils = require('web3-utils')
@@ -36,34 +36,60 @@ module.exports = {
       port: 8545, // Standard Ethereum port (default: none)
       network_id: '*', // Any network (default: none)
     },
+    // local: {
+    //   network_id: '2', // Any network (default: none)
+    //   provider: () => {
+    //     const truffleProvider = new TruffleProvider(
+    //       local_url,
+    //       { memonic: local_mnemonic },
+    //       { shardID: 0, chainId: 2 },
+    //       { gasLimit: gasLimit, gasPrice: gasPrice },
+    //     )
+    //     const newAcc = truffleProvider.addByPrivateKey(local_private_key)
+    //     truffleProvider.setSigner(newAcc)
+    //     return truffleProvider
+    //   },
+    // },
     local: {
-      network_id: '2', // Any network (default: none)
       provider: () => {
-        const truffleProvider = new TruffleProvider(
-          local_url,
-          { memonic: local_mnemonic },
-          { shardID: 0, chainId: 2 },
-          { gasLimit: gasLimit, gasPrice: gasPrice },
-        )
-        const newAcc = truffleProvider.addByPrivateKey(local_private_key)
-        truffleProvider.setSigner(newAcc)
-        return truffleProvider
+        return new HDWalletProvider({
+          local_mnemonic,
+          providerOrUrl: local_url, // https://api.s0.t.hmny.io for mainnet
+          derivationPath: `m/44'/1023'/0'/0/`
+        })
       },
+      network_id: 1666700000, // 1666600000 for mainnet
     },
-    testnet: {
-      network_id: '2', // Any network (default: none)
+    testnetHar: {
       provider: () => {
-        const truffleProvider = new TruffleProvider(
-          testnet_url,
-          { memonic: testnet_mnemonic },
-          { shardID: 0, chainId: 2 },
-          { gasLimit: gasLimit * 9000, gasPrice: gasPrice * 9000 },
-        )
-        const newAcc = truffleProvider.addByPrivateKey(testnet_private_key)
-        truffleProvider.setSigner(newAcc)
-        return truffleProvider
+        if (!local_private_key.trim()) {
+          throw new Error (
+            'Please enter a private key with funds, you can use the default one'
+          )
+        }
+        return new HDWalletProvider({
+          privateKeys: [testnet_private_key],
+          providerOrUrl: testnet_url,
+          gasLimit: gasLimit,
+          gasPrice: gasPrice,
+        })
       },
+      network_id: 1666700000,
     },
+    // testnet: {
+    //   network_id: '2', // Any network (default: none)
+    //   provider: () => {
+    //     const truffleProvider = new TruffleProvider(
+    //       testnet_url,
+    //       { memonic: testnet_mnemonic },
+    //       { shardID: 0, chainId: 2 },
+    //       { gasLimit: gasLimit * 9000, gasPrice: gasPrice * 9000 },
+    //     )
+    //     const newAcc = truffleProvider.addByPrivateKey(testnet_private_key)
+    //     truffleProvider.setSigner(newAcc)
+    //     return truffleProvider
+    //   },
+    // },
     kovan: {
       provider: () =>
         new HDWalletProvider(

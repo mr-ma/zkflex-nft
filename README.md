@@ -15,7 +15,7 @@ In this project we realize one aspect of new members' merit, i.e., net worth, wi
 
 ## Requirements
 
-1. `node v11.15.0`
+1. `node v16.15.0`
 2. `npm install -g npx`
 
 ## Usage
@@ -25,31 +25,23 @@ You can see example usage in cli.js, it works both in the console and in the bro
 1. `npm install`
 1. `cp .env.example .env`
 1. `npm run build` - this may take 10 minutes or more
-1. `npx ganache-cli`
+1. `npx ganache-cli -e 20000000`
 1. `npm run test` - optionally runs tests. It may fail on the first try, just run it again.
 
-Use browser version on Kovan:
+## Frontend (Website)
 
-1. `vi .env` - add your Kovan private key to deploy contracts
-1. `npm run migrate`
-1. `npx http-server` - serve current dir, you can use any other static http server
-1. Open `localhost:8080`
-
-Use the command-line version. Works for Ganache, Kovan, and Mainnet:
-
-### Initialization
-
-1. `cp .env.example .env`
-1. `npm run download`
-1. `npm run build:contract`
-
-### Ganache
-
-1. make sure you complete steps from Initialization
-1. `ganache-cli -i 1337`
-1. `npm run migrate:dev`
-1. `./cli.js test`
-1. `./cli.js --help`
+1. `cd frontend`
+1. `vim config.json`
+1. Input your config, address of contracts, flex amount, and genesis block
+```json
+{
+    "flexclub_address": "0x849fBDb3A5ab97095a1BdEd618FE578D5d159de3",
+    "flexnft_address": "0xEB49f2D00c72F02485E1031c0e8bf76f107A3a67",
+    "eth_amount": "100000000000000000000",
+    "genesis_block": 24808523
+}
+```
+1. `npx http-server`
 
 ### CLI
 
@@ -75,16 +67,15 @@ Use the command-line version. Works for Ganache, Kovan, and Mainnet:
 > Transaction mined in block 17036120
 > Done
 
-## Deploy ETH FlexClub Cash
+## Deploy ETH FlexClub
 
 1. `cp .env.example .env`
 1. Tune all necessary params
-1. `npx truffle migrate --network kovan --reset --f 2 --to 4`
+1. `npx truffle migrate --network harmonyTest --reset --f 2 --to 4`
 
-## Credits
+## Credits 
 
-Special thanks to @barryWhiteHat and @kobigurk for valuable input,
-and @jbaylina for awesome [Circom](https://github.com/iden3/circom) & [Websnark](https://github.com/iden3/websnark) framework
+Special thanks to Tornado Cash team for open sourcing their repository.
 
 ## Minimal demo example
 
