@@ -17,16 +17,23 @@ In this project we realize one aspect of new members' merit, i.e., net worth, wi
 ### Harmony Mainnent
 
 Hasher: `0x334CD66ed692520788B83eC18d5F649caFF5176d`
+
 Verifier: `0x354F18AfC2668781ef864E7A7169ac304b6E0994`
+
 Flex Club: `0x9133A9c9Fe6cA8BDd14BbA719250aA20F8A4fEe4`
+
 Flex Club NFT (ERC721): `0x3B31ECf60636a2EEAc47797Be7Afa67D0C0e6B21`
 
 ### Harmony Testnet
 
 Hasher: ``
+
 Verifier: ``
+
 Flex Club: `0x49ab8Ec181dD5357b9Fc19d9AB4Adbd7DE121256`
+
 Flex Club NFT (ERC721): `0xdAffcb3EAD9479e408134AF1c2533C5299c8c4b7`
+
 
 ## Frontend(s)
 
